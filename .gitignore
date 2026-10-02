@@ -1,0 +1,12 @@
+CLAUDE.md
+PROJECT_LOG.md
+LEARNING_LOG.md
+.venv/
+__pycache__/
+.env
+.env.*
+!.env.example
+.databricks/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
