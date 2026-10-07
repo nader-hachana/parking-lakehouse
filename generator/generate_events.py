@@ -1,8 +1,10 @@
-"""Generate clean parking events as one JSON Lines file.
+"""Generate parking events as one JSON Lines file per batch.
 
 Each parking session produces three linked events: entry, payment, exit.
-Problems (duplicates, late events, bad values, schema change) are added in
-later steps, so this version only writes clean data.
+On top of the clean data, problems are injected on purpose:
+  - duplicates (same event_id), inside a file and across batches
+Late events, missing fields, bad values and a schema change are added in
+later steps.
 
 Example:
     uv run python generator/generate_events.py --sessions 50 --seed 1
@@ -85,6 +87,51 @@ def generate(sessions: int, seed: int, day: date) -> list[dict]:
     return events
 
 
+def inject_duplicates(
+    events: list[dict], rate: float, seed: int
+) -> tuple[list[dict], list[dict]]:
+    """Copy a share of events. Half reappear shortly after in the same file,
+    half are returned as carry-over for a later batch (an upstream retry).
+
+    A duplicate is an exact copy with the same event_id, which is what silver
+    will deduplicate on.
+    """
+    rng = random.Random(f"{seed}-duplicates")
+    count = round(len(events) * rate)
+    chosen = rng.sample(range(len(events)), k=min(count, len(events)))
+
+    keyed = [(float(i), event) for i, event in enumerate(events)]
+    carry_over = []
+    for n, i in enumerate(chosen):
+        if n % 2 == 0:
+            # Same file: lands a few positions after the original.
+            keyed.append((i + rng.uniform(0.5, 30), dict(events[i])))
+        else:
+            carry_over.append(dict(events[i]))
+
+    keyed.sort(key=lambda pair: pair[0])
+    return [event for _, event in keyed], carry_over
+
+
+def load_pending(path: Path) -> list[dict]:
+    """Read carry-over duplicates from an earlier run, then clear the file."""
+    if not path.exists():
+        return []
+    with path.open() as f:
+        pending = [json.loads(line) for line in f if line.strip()]
+    path.unlink()
+    return pending
+
+
+def save_pending(path: Path, events: list[dict]) -> None:
+    if not events:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        for event in events:
+            f.write(json.dumps(event) + "\n")
+
+
 def write_batch(events: list[dict], out_dir: Path, batch: int) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -112,11 +159,33 @@ def main() -> None:
         default=Path("data/local/parking_events"),
         help="local output folder",
     )
+    parser.add_argument(
+        "--duplicate-rate",
+        type=float,
+        default=0.02,
+        help="share of events that get duplicated (0 turns it off)",
+    )
+    parser.add_argument(
+        "--pending-file",
+        type=Path,
+        default=Path("data/local/pending_duplicates.jsonl"),
+        help="carry-over duplicates that show up in the next batch",
+    )
     args = parser.parse_args()
 
     events = generate(args.sessions, args.seed, args.date)
+    events, carry_over = inject_duplicates(events, args.duplicate_rate, args.seed)
+
+    # Duplicates held back by an earlier run arrive at the start of this file.
+    pending = load_pending(args.pending_file)
+    events = pending + events
+    save_pending(args.pending_file, carry_over)
+
     path = write_batch(events, args.out_dir, args.batch)
-    print(f"Wrote {len(events)} events to {path}")
+    print(
+        f"Wrote {len(events)} events to {path} "
+        f"({len(pending)} carried over from earlier, {len(carry_over)} held for the next batch)"
+    )
 
 
 if __name__ == "__main__":
