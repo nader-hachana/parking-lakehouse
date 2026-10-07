@@ -10,3 +10,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .DS_Store
+
+data/
+INTERVIEW_QA.md
