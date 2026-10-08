@@ -4,7 +4,9 @@ Each parking session produces three linked events: entry, payment, exit.
 On top of the clean data, problems are injected on purpose:
   - duplicates (same event_id), inside a file and across batches
   - late events: event_ts is honest, but delivery is 1 to 3 batches late
-Missing fields, bad values and a schema change are added in later steps.
+  - missing fields (no plate, null amount), invalid values (negative amount,
+    exit before entry) and malformed lines (cut-off, broken JSON)
+A schema change is added in a later step.
 
 Example:
     uv run python generator/generate_events.py --sessions 50 --seed 1
@@ -33,8 +35,11 @@ def make_id(rng: random.Random) -> str:
     return str(uuid.UUID(int=rng.getrandbits(128), version=4))
 
 
+TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
 def format_ts(ts: datetime) -> str:
-    return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return ts.strftime(TS_FORMAT)
 
 
 def make_plate(rng: random.Random) -> str:
@@ -179,13 +184,69 @@ def save_pending(path: Path, events: list[dict]) -> None:
             f.write(json.dumps(event) + "\n")
 
 
-def write_batch(events: list[dict], out_dir: Path, batch: int) -> Path:
+def corrupt_events(
+    events: list[dict], missing_rate: float, invalid_rate: float, seed: int
+) -> tuple[list[dict], int, int]:
+    """Make some events incomplete or wrong, still valid JSON.
+
+    Missing: `plate` removed, or `amount_eur` set to null on a payment.
+    Invalid: negative `amount_eur`, or an exit stamped before its entry.
+    An event gets at most one of these.
+    """
+    rng = random.Random(f"{seed}-corrupt")
+    events = [dict(e) for e in events]
+    entry_ts = {e["session_id"]: e["event_ts"] for e in events if e["event_type"] == "entry"}
+
+    missing_idx = rng.sample(
+        range(len(events)), k=min(round(len(events) * missing_rate), len(events))
+    )
+    for i in missing_idx:
+        if events[i]["event_type"] == "payment" and rng.random() < 0.5:
+            events[i]["amount_eur"] = None
+        else:
+            events[i].pop("plate", None)
+
+    # Only payments and exits with a known entry can be made invalid.
+    taken = set(missing_idx)
+    eligible = [
+        i
+        for i, e in enumerate(events)
+        if i not in taken
+        and (e["event_type"] == "payment" or (e["event_type"] == "exit" and e["session_id"] in entry_ts))
+    ]
+    invalid_idx = rng.sample(
+        eligible, k=min(round(len(events) * invalid_rate), len(eligible))
+    )
+    for i in invalid_idx:
+        e = events[i]
+        if e["event_type"] == "payment":
+            e["amount_eur"] = -abs(e["amount_eur"])
+        else:
+            entry = datetime.strptime(entry_ts[e["session_id"]], TS_FORMAT)
+            e["event_ts"] = format_ts(entry - timedelta(minutes=rng.randint(1, 60)))
+
+    return events, len(missing_idx), len(invalid_idx)
+
+
+def to_lines(events: list[dict], malformed_rate: float, seed: int) -> tuple[list[str], int]:
+    """Turn events into JSON lines. A share of lines is cut off, so they are
+    not valid JSON anymore and the event is lost (like a broken upload)."""
+    rng = random.Random(f"{seed}-malformed")
+    lines = [json.dumps(e) for e in events]
+    count = min(round(len(lines) * malformed_rate), len(lines))
+    for i in rng.sample(range(len(lines)), k=count):
+        cut = int(len(lines[i]) * rng.uniform(0.3, 0.8))
+        lines[i] = lines[i][:cut]
+    return lines, count
+
+
+def write_batch(lines: list[str], out_dir: Path, batch: int) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     path = out_dir / f"batch_{batch:04d}_{stamp}.jsonl"
     with path.open("w") as f:
-        for event in events:
-            f.write(json.dumps(event) + "\n")
+        for line in lines:
+            f.write(line + "\n")
     return path
 
 
@@ -230,12 +291,34 @@ def main() -> None:
         default=Path("data/local/late_events.jsonl"),
         help="events waiting for a later batch",
     )
+    parser.add_argument(
+        "--missing-rate",
+        type=float,
+        default=0.015,
+        help="share of events with a missing plate or a null amount",
+    )
+    parser.add_argument(
+        "--invalid-rate",
+        type=float,
+        default=0.005,
+        help="share of events with a negative amount or an exit before its entry",
+    )
+    parser.add_argument(
+        "--malformed-rate",
+        type=float,
+        default=0.005,
+        help="share of lines written as broken JSON",
+    )
     args = parser.parse_args()
 
     events = generate(args.sessions, args.seed, args.date)
 
     # Late events leave this batch first, so they are not duplicated here.
     events, late_held = hold_back_late(events, args.late_rate, args.seed, args.batch)
+    # Bad values are added before duplicating, so a duplicate is an exact copy.
+    events, n_missing, n_invalid = corrupt_events(
+        events, args.missing_rate, args.invalid_rate, args.seed
+    )
     events, carry_over = inject_duplicates(events, args.duplicate_rate, args.seed)
 
     # Events held back by earlier runs arrive at the start of this file.
@@ -245,11 +328,13 @@ def main() -> None:
     save_late(args.late_file, late_held)
     save_pending(args.pending_file, carry_over)
 
-    path = write_batch(events, args.out_dir, args.batch)
+    lines, n_malformed = to_lines(events, args.malformed_rate, args.seed)
+    path = write_batch(lines, args.out_dir, args.batch)
     print(
-        f"Wrote {len(events)} events to {path}\n"
+        f"Wrote {len(lines)} lines to {path}\n"
         f"  late events arriving now: {len(late_due)}, held back for later: {len(late_held)}\n"
-        f"  duplicates carried over: {len(pending)}, held for the next batch: {len(carry_over)}"
+        f"  duplicates carried over: {len(pending)}, held for the next batch: {len(carry_over)}\n"
+        f"  missing fields: {n_missing}, invalid values: {n_invalid}, malformed lines: {n_malformed}"
     )
 
 
