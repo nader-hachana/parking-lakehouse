@@ -3,8 +3,8 @@
 Each parking session produces three linked events: entry, payment, exit.
 On top of the clean data, problems are injected on purpose:
   - duplicates (same event_id), inside a file and across batches
-Late events, missing fields, bad values and a schema change are added in
-later steps.
+  - late events: event_ts is honest, but delivery is 1 to 3 batches late
+Missing fields, bad values and a schema change are added in later steps.
 
 Example:
     uv run python generator/generate_events.py --sessions 50 --seed 1
@@ -85,6 +85,53 @@ def generate(sessions: int, seed: int, day: date) -> list[dict]:
     # Files arrive roughly in time order.
     events.sort(key=lambda e: e["event_ts"])
     return events
+
+
+def hold_back_late(
+    events: list[dict], rate: float, seed: int, batch: int
+) -> tuple[list[dict], list[dict]]:
+    """Take a share of events out of this batch and deliver them 1 to 3 batches
+    later. event_ts is not changed, so the event arrives after newer data.
+
+    Returns the events that stay in this batch, and records to store as
+    {"release_batch": n, "event": {...}}.
+    """
+    rng = random.Random(f"{seed}-late")
+    count = round(len(events) * rate)
+    late_idx = set(rng.sample(range(len(events)), k=min(count, len(events))))
+
+    kept = [e for i, e in enumerate(events) if i not in late_idx]
+    held = [
+        {"release_batch": batch + rng.randint(1, 3), "event": events[i]}
+        for i in sorted(late_idx)
+    ]
+    return kept, held
+
+
+def release_late(path: Path, batch: int) -> list[dict]:
+    """Return held events that are due in this batch. The rest stay in the file."""
+    if not path.exists():
+        return []
+    with path.open() as f:
+        records = [json.loads(line) for line in f if line.strip()]
+    due = [r["event"] for r in records if r["release_batch"] <= batch]
+    waiting = [r for r in records if r["release_batch"] > batch]
+    if waiting:
+        with path.open("w") as f:
+            for record in waiting:
+                f.write(json.dumps(record) + "\n")
+    else:
+        path.unlink()
+    return due
+
+
+def save_late(path: Path, held: list[dict]) -> None:
+    if not held:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        for record in held:
+            f.write(json.dumps(record) + "\n")
 
 
 def inject_duplicates(
@@ -171,20 +218,38 @@ def main() -> None:
         default=Path("data/local/pending_duplicates.jsonl"),
         help="carry-over duplicates that show up in the next batch",
     )
+    parser.add_argument(
+        "--late-rate",
+        type=float,
+        default=0.03,
+        help="share of events delivered 1 to 3 batches late (0 turns it off)",
+    )
+    parser.add_argument(
+        "--late-file",
+        type=Path,
+        default=Path("data/local/late_events.jsonl"),
+        help="events waiting for a later batch",
+    )
     args = parser.parse_args()
 
     events = generate(args.sessions, args.seed, args.date)
+
+    # Late events leave this batch first, so they are not duplicated here.
+    events, late_held = hold_back_late(events, args.late_rate, args.seed, args.batch)
     events, carry_over = inject_duplicates(events, args.duplicate_rate, args.seed)
 
-    # Duplicates held back by an earlier run arrive at the start of this file.
+    # Events held back by earlier runs arrive at the start of this file.
+    late_due = release_late(args.late_file, args.batch)
     pending = load_pending(args.pending_file)
-    events = pending + events
+    events = late_due + pending + events
+    save_late(args.late_file, late_held)
     save_pending(args.pending_file, carry_over)
 
     path = write_batch(events, args.out_dir, args.batch)
     print(
-        f"Wrote {len(events)} events to {path} "
-        f"({len(pending)} carried over from earlier, {len(carry_over)} held for the next batch)"
+        f"Wrote {len(events)} events to {path}\n"
+        f"  late events arriving now: {len(late_due)}, held back for later: {len(late_held)}\n"
+        f"  duplicates carried over: {len(pending)}, held for the next batch: {len(carry_over)}"
     )
 
 
