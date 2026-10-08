@@ -6,7 +6,9 @@ On top of the clean data, problems are injected on purpose:
   - late events: event_ts is honest, but delivery is 1 to 3 batches late
   - missing fields (no plate, null amount), invalid values (negative amount,
     exit before entry) and malformed lines (cut-off, broken JSON)
-A schema change is added in a later step.
+  - a schema change: from a chosen batch on, entry events get a new field
+    `vehicle_type`. Older batches, and late events held back before the
+    change, do not have it.
 
 Example:
     uv run python generator/generate_events.py --sessions 50 --seed 1
@@ -27,6 +29,7 @@ GARAGES = {
     "G03": {"Z1": 1.80},
 }
 PAYMENT_METHODS = ["card", "cash", "app"]
+VEHICLE_TYPES = ["car", "ev", "motorcycle"]
 PLATE_LETTERS = "ABCDEFGHJKLMNPRSTUVWXYZ"
 
 
@@ -240,6 +243,18 @@ def to_lines(events: list[dict], malformed_rate: float, seed: int) -> tuple[list
     return lines, count
 
 
+def add_vehicle_type(events: list[dict], seed: int) -> list[dict]:
+    """Schema change: entry events get a new field, `vehicle_type`."""
+    rng = random.Random(f"{seed}-vehicle")
+    result = []
+    for event in events:
+        event = dict(event)
+        if event["event_type"] == "entry":
+            event["vehicle_type"] = rng.choice(VEHICLE_TYPES)
+        result.append(event)
+    return result
+
+
 def write_batch(lines: list[str], out_dir: Path, batch: int) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -309,9 +324,18 @@ def main() -> None:
         default=0.005,
         help="share of lines written as broken JSON",
     )
+    parser.add_argument(
+        "--schema-version-from",
+        type=int,
+        default=5,
+        help="from this batch number on, entry events get a `vehicle_type` field",
+    )
     args = parser.parse_args()
 
     events = generate(args.sessions, args.seed, args.date)
+    schema_changed = args.batch >= args.schema_version_from
+    if schema_changed:
+        events = add_vehicle_type(events, args.seed)
 
     # Late events leave this batch first, so they are not duplicated here.
     events, late_held = hold_back_late(events, args.late_rate, args.seed, args.batch)
@@ -334,7 +358,8 @@ def main() -> None:
         f"Wrote {len(lines)} lines to {path}\n"
         f"  late events arriving now: {len(late_due)}, held back for later: {len(late_held)}\n"
         f"  duplicates carried over: {len(pending)}, held for the next batch: {len(carry_over)}\n"
-        f"  missing fields: {n_missing}, invalid values: {n_invalid}, malformed lines: {n_malformed}"
+        f"  missing fields: {n_missing}, invalid values: {n_invalid}, malformed lines: {n_malformed}\n"
+        f"  schema: {'new (entry events have vehicle_type)' if schema_changed else 'original'}"
     )
 
 
