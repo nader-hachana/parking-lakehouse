@@ -31,8 +31,8 @@ The generated data is messy on purpose: duplicates, late events, missing fields,
 
 | Phase | What | Status |
 |---|---|---|
-| 0 | Setup: workspace, CLI, catalog, schemas, landing volume | In progress |
-| 1 | Event generator | To do |
+| 0 | Setup: workspace, CLI, catalog, schemas, landing volume | Done |
+| 1 | Event generator | In progress |
 | 2 | Bronze with Auto Loader | To do |
 | 3 | Silver with Lakeflow Declarative Pipelines | To do |
 | 4 | Gold tables and performance | To do |
@@ -53,7 +53,13 @@ parking                catalog
 
 ## How to run it
 
-Coming soon, once there is something to run.
+The event generator runs locally with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv run python generator/generate_events.py --sessions 100 --seed 1 --batch 1 --date 2026-10-01
+```
+
+Each run writes a new JSON Lines file to `data/local/parking_events/`. Use a different `--batch`, `--seed` and `--date` for every run to see late and duplicate events show up across files. Uploading to the Databricks volume and the pipeline come in later phases.
 
 ## Limitations
 
