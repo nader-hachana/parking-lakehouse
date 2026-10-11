@@ -33,7 +33,7 @@ The generated data is messy on purpose: duplicates, late events, missing fields,
 |---|---|---|
 | 0 | Setup: workspace, CLI, catalog, schemas, landing volume | Done |
 | 1 | Event generator | Done |
-| 2 | Bronze with Auto Loader | To do |
+| 2 | Bronze with Auto Loader | Done |
 | 3 | Silver with Lakeflow Declarative Pipelines | To do |
 | 4 | Gold tables and performance | To do |
 | 5 | Orchestration with Jobs | To do |
