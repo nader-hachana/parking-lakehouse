@@ -53,6 +53,10 @@ def raw_events():
         .option("cloudFiles.format", "json")
         .option("cloudFiles.inferColumnTypes", "true")
         .option("cloudFiles.schemaHints", "_corrupt_record STRING")
+        # Trusted internal producer: new fields become columns. The stream fails once
+        # when it sees a new field and the retry picks up the new schema. Silver selects
+        # its columns explicitly, so a new bronze column does not reach silver by itself.
+        .option("cloudFiles.schemaEvolutionMode", "addNewColumns")
         .load(f"{LANDING}/parking_events")
         .withColumn("_ingested_at", F.current_timestamp())
         .withColumn("_source_file", F.col("_metadata.file_path"))
@@ -65,6 +69,7 @@ def raw_garages():
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "json")
         .option("cloudFiles.schemaHints", "capacity INT, hourly_rate_eur DOUBLE, snapshot_ts TIMESTAMP")
+        .option("cloudFiles.schemaEvolutionMode", "addNewColumns")
         .load(f"{LANDING}/garages")
         .withColumn("_ingested_at", F.current_timestamp())
         .withColumn("_source_file", F.col("_metadata.file_path"))

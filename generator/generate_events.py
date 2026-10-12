@@ -9,6 +9,8 @@ On top of the clean data, problems are injected on purpose:
   - a schema change: from a chosen batch on, entry events get a new field
     `vehicle_type`. Older batches, and late events held back before the
     change, do not have it.
+  - optionally a second schema change (--new-field-from): entry events also
+    get `entry_gate`, to test schema evolution on a table that already exists
 
 Example:
     uv run python generator/generate_events.py --sessions 50 --seed 1
@@ -30,6 +32,7 @@ GARAGES = {
 }
 PAYMENT_METHODS = ["card", "cash", "app"]
 VEHICLE_TYPES = ["car", "ev", "motorcycle"]
+ENTRY_GATES = ["north", "south"]
 PLATE_LETTERS = "ABCDEFGHJKLMNPRSTUVWXYZ"
 
 
@@ -255,6 +258,18 @@ def add_vehicle_type(events: list[dict], seed: int) -> list[dict]:
     return result
 
 
+def add_entry_gate(events: list[dict], seed: int) -> list[dict]:
+    """Second schema change: entry events get another new field, `entry_gate`."""
+    rng = random.Random(f"{seed}-gate")
+    result = []
+    for event in events:
+        event = dict(event)
+        if event["event_type"] == "entry":
+            event["entry_gate"] = rng.choice(ENTRY_GATES)
+        result.append(event)
+    return result
+
+
 def write_batch(lines: list[str], out_dir: Path, batch: int) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -330,12 +345,22 @@ def main() -> None:
         default=5,
         help="from this batch number on, entry events get a `vehicle_type` field",
     )
+    parser.add_argument(
+        "--new-field-from",
+        type=int,
+        default=None,
+        help="from this batch number on, entry events also get an `entry_gate` field "
+        "(a second schema change, off by default)",
+    )
     args = parser.parse_args()
 
     events = generate(args.sessions, args.seed, args.date)
     schema_changed = args.batch >= args.schema_version_from
     if schema_changed:
         events = add_vehicle_type(events, args.seed)
+    gate_added = args.new_field_from is not None and args.batch >= args.new_field_from
+    if gate_added:
+        events = add_entry_gate(events, args.seed)
 
     # Late events leave this batch first, so they are not duplicated here.
     events, late_held = hold_back_late(events, args.late_rate, args.seed, args.batch)
@@ -360,6 +385,7 @@ def main() -> None:
         f"  duplicates carried over: {len(pending)}, held for the next batch: {len(carry_over)}\n"
         f"  missing fields: {n_missing}, invalid values: {n_invalid}, malformed lines: {n_malformed}\n"
         f"  schema: {'new (entry events have vehicle_type)' if schema_changed else 'original'}"
+        f"{', plus entry_gate' if gate_added else ''}"
     )
 
 
