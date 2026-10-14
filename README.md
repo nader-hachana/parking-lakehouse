@@ -35,7 +35,7 @@ The generated data is messy on purpose: duplicates, late events, missing fields,
 | 1 | Event generator | Done |
 | 2 | Bronze with Auto Loader | Done |
 | 3 | Silver with Lakeflow Declarative Pipelines | Done |
-| 4 | Gold tables and performance | To do |
+| 4 | Gold tables and performance | Done |
 | 5 | Orchestration with Jobs | To do |
 | 6 | Tests and CI/CD with Asset Bundles | To do |
 | 7 | Observability and dashboard | To do |
