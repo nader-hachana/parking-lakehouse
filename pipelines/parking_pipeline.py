@@ -158,3 +158,134 @@ dp.create_auto_cdc_flow(
     stored_as_scd_type=2,
     except_column_list=["snapshot_ts", "_source_file", "_ingested_at", "_rescued_data"],
 )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Silver: sessions
+# MAGIC One row per session_id, built from its entry, payment and exit events. A materialized
+# MAGIC view, because a late exit must change a session that was already computed. Checks that
+# MAGIC need more than one event (exit before entry, missing entry or exit) live here.
+
+# COMMAND ----------
+
+EVENTS = f"{CATALOG}.silver.events"
+SESSIONS = f"{CATALOG}.silver.sessions"
+DIM_ZONE = f"{CATALOG}.silver.dim_zone"
+
+
+@dp.materialized_view(
+    name=SESSIONS,
+    comment="One row per parking session with status and duration. Duration only for complete sessions.",
+)
+def sessions():
+    e = F.col("event_type")
+    s = (
+        spark.read.table(EVENTS)
+        .groupBy("session_id")
+        .agg(
+            F.min(F.when(e == "entry", F.col("event_ts"))).alias("entry_ts"),
+            F.max(F.when(e == "exit", F.col("event_ts"))).alias("exit_ts"),
+            F.max(F.when(e == "payment", F.col("amount_eur"))).alias("amount_eur"),
+            F.max("garage_id").alias("garage_id"),
+            F.max("zone_id").alias("zone_id"),
+            F.max("plate").alias("plate"),
+        )
+        .withColumn(
+            "status",
+            F.when(F.col("entry_ts").isNull(), "no_entry")
+            .when(F.col("exit_ts").isNull(), "open")
+            .when(F.col("exit_ts") < F.col("entry_ts"), "invalid_order")
+            .otherwise("complete"),
+        )
+    )
+    return s.withColumn(
+        "duration_minutes",
+        F.when(
+            F.col("status") == "complete",
+            (F.unix_timestamp("exit_ts") - F.unix_timestamp("entry_ts")) / 60,
+        ),
+    )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Gold
+# MAGIC Business tables for the dashboard. All materialized views, so late data corrects
+# MAGIC numbers that were already computed.
+
+# COMMAND ----------
+
+
+@dp.materialized_view(
+    name=f"{CATALOG}.gold.revenue_daily",
+    comment="Revenue and number of payments per garage and payment date.",
+)
+def revenue_daily():
+    return (
+        spark.read.table(EVENTS)
+        .where(F.col("event_type") == "payment")
+        .groupBy("garage_id", F.to_date("event_ts").alias("revenue_date"))
+        .agg(
+            F.round(F.sum("amount_eur"), 2).alias("revenue_eur"),
+            F.count("*").alias("payments"),
+        )
+    )
+
+
+@dp.materialized_view(
+    name=f"{CATALOG}.gold.parking_duration_daily",
+    comment="Average parking duration per garage and entry date, with session status counts.",
+)
+def parking_duration_daily():
+    status = F.col("status")
+    return (
+        spark.read.table(SESSIONS)
+        .where(F.col("entry_ts").isNotNull())
+        .groupBy("garage_id", F.to_date("entry_ts").alias("entry_date"))
+        .agg(
+            F.round(F.avg("duration_minutes"), 1).alias("avg_duration_minutes"),
+            F.sum(F.when(status == "complete", 1).otherwise(0)).alias("complete_sessions"),
+            F.sum(F.when(status == "open", 1).otherwise(0)).alias("open_sessions"),
+            F.sum(F.when(status == "invalid_order", 1).otherwise(0)).alias("invalid_sessions"),
+        )
+    )
+
+
+@dp.materialized_view(
+    name=f"{CATALOG}.gold.zone_occupancy_hourly",
+    comment="Cars present per zone and hour (complete sessions), with capacity valid at that hour.",
+)
+def zone_occupancy_hourly():
+    complete = spark.read.table(SESSIONS).where(F.col("status") == "complete")
+    present = (
+        complete.withColumn(
+            "hour_ts",
+            F.explode(
+                F.sequence(
+                    F.date_trunc("hour", "entry_ts"),
+                    F.date_trunc("hour", "exit_ts"),
+                    F.expr("interval 1 hour"),
+                )
+            ),
+        )
+        .groupBy("garage_id", "zone_id", "hour_ts")
+        .agg(F.countDistinct("session_id").alias("cars_present"))
+        .alias("o")
+    )
+    zones = spark.read.table(DIM_ZONE).alias("z")
+    # Point-in-time join: the zone version that was valid at that hour.
+    valid_at_hour = (
+        (F.col("o.garage_id") == F.col("z.garage_id"))
+        & (F.col("o.zone_id") == F.col("z.zone_id"))
+        & (F.col("o.hour_ts") >= F.col("z.__START_AT"))
+        & (F.col("z.__END_AT").isNull() | (F.col("o.hour_ts") < F.col("z.__END_AT")))
+    )
+    return present.join(zones, valid_at_hour, "left").select(
+        F.col("o.garage_id"),
+        F.col("o.zone_id"),
+        F.col("o.hour_ts"),
+        F.col("o.cars_present"),
+        F.col("z.capacity"),
+        F.round(F.col("o.cars_present") / F.col("z.capacity") * 100, 1).alias("occupancy_pct"),
+    )
