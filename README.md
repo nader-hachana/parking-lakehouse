@@ -16,16 +16,16 @@ A Python script generates parking events (cars entering, leaving, paying) and wr
 
 A Databricks SQL dashboard sits on top of the gold tables.
 
-The generated data is messy on purpose: duplicates, late events, missing fields, and a new field that appears halfway through. That is what makes the cleaning steps worth doing.
+The generated data is messy on purpose: duplicates, late events, missing fields, invalid values, broken lines, and new fields that appear over time. That is what makes the cleaning steps worth doing.
 
 ## Tech
 
 - Databricks Free Edition (serverless)
 - Unity Catalog and Volumes
 - Auto Loader, Lakeflow Declarative Pipelines, Delta Lake
-- Databricks Jobs, Asset Bundles
+- Databricks Jobs
 - Python, SQL, PySpark
-- GitHub Actions
+- Asset Bundles and GitHub Actions (planned, Phase 6)
 
 ## Project status
 
@@ -76,6 +76,8 @@ generate_garages ---/
 
 The generators inject problems on purpose (duplicates, late events, missing and invalid values, broken lines, two schema changes), so the pipeline has real work to do.
 
+The job is currently created by hand with the Databricks CLI, has no schedule yet, and is not defined in this repository. Defining it as code (Asset Bundles) is part of Phase 6.
+
 ## Running the generator locally
 
 The generator also runs on its own with [uv](https://docs.astral.sh/uv/):
@@ -89,5 +91,6 @@ Each call writes the next file into `data/local/landing/`, so running it several
 
 ## Limitations
 
-- Free Edition has usage limits, so the data volumes are small.
+- Free Edition has usage limits, so the data volumes are small. Serverless compute is capped: running notebooks or queries while the job runs can trigger a "limit for serverless compute" error, which the pipeline retries by itself.
+- Unity Catalog volumes cannot append to an existing file, so the generator rewrites its state files as whole files.
 - Storage is managed by Databricks, since Free Edition does not allow custom storage locations.
