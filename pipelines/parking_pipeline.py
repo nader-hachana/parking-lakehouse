@@ -90,7 +90,15 @@ def raw_garages():
 @dp.expect_all_or_drop(DROP_RULES)
 @dp.expect_all(WARN_RULES)
 def events_valid():
-    return spark.readStream.table(RAW_EVENTS).select(
+    raw = spark.readStream.table(RAW_EVENTS)
+    # vehicle_type only appears in the source from batch 5. Until bronze has the column,
+    # silver gets nulls instead of failing on an unresolved column.
+    vehicle_type = (
+        F.col("vehicle_type")
+        if "vehicle_type" in raw.columns
+        else F.lit(None).cast("string")
+    ).alias("vehicle_type")
+    return raw.select(
         "event_id",
         "event_type",
         F.col("event_ts").cast("timestamp").alias("event_ts"),
@@ -100,7 +108,7 @@ def events_valid():
         "plate",
         "amount_eur",
         "payment_method",
-        "vehicle_type",
+        vehicle_type,
         "_ingested_at",
         "_source_file",
         "_corrupt_record",

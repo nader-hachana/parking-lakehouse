@@ -36,7 +36,7 @@ The generated data is messy on purpose: duplicates, late events, missing fields,
 | 2 | Bronze with Auto Loader | Done |
 | 3 | Silver with Lakeflow Declarative Pipelines | Done |
 | 4 | Gold tables and performance | Done |
-| 5 | Orchestration with Jobs | To do |
+| 5 | Orchestration with Jobs | In progress |
 | 6 | Tests and CI/CD with Asset Bundles | To do |
 | 7 | Observability and dashboard | To do |
 | 8 | Documentation | To do |
@@ -51,15 +51,41 @@ parking                catalog
   gold                 business-level tables
 ```
 
-## How to run it
+## Repository layout
 
-The event generator runs locally with [uv](https://docs.astral.sh/uv/):
-
-```bash
-uv run python generator/generate_events.py --sessions 100 --seed 1 --batch 1 --date 2026-10-01
+```
+generator/    simulates the source systems (events and zone snapshots)
+pipelines/    the Lakeflow Declarative Pipeline: bronze, silver and gold
+checks/       data checks run as the last task of the job
 ```
 
-Each run writes a new JSON Lines file to `data/local/parking_events/`. Use a different `--batch`, `--seed` and `--date` for every run to see late and duplicate events show up across files. Uploading to the Databricks volume and the pipeline come in later phases.
+## How it runs
+
+A Databricks job runs these tasks in order:
+
+```
+generate_batch  ----\
+                      >----  run_pipeline  ---->  check_results
+generate_garages ---/
+```
+
+- **generate_batch** (`generator/run_batch.py`) writes the next batch of parking events to the landing volume. It works out the batch number and date itself and keeps its state in the volume.
+- **generate_garages** (`generator/run_garages.py`) writes the next daily snapshot of the garage zones, including a scheduled rate change.
+- **run_pipeline** ingests the new files and refreshes bronze, silver (events, rejected events, sessions, zone history) and the gold tables (revenue, parking duration, zone occupancy).
+- **check_results** (`checks/check_results.py`) fails the run when the numbers are clearly wrong, for example an empty table or more than 5 % of raw lines rejected.
+
+The generators inject problems on purpose (duplicates, late events, missing and invalid values, broken lines, two schema changes), so the pipeline has real work to do.
+
+## Running the generator locally
+
+The generator also runs on its own with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv run python generator/run_batch.py --root data/local/landing --sessions 100
+uv run python generator/run_garages.py --root data/local/landing --set-rate-from 2026-10-05:G01:Z1=2.75
+```
+
+Each call writes the next file into `data/local/landing/`, so running it several times produces a series of batches.
 
 ## Limitations
 

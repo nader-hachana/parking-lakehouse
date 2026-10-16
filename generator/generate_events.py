@@ -119,30 +119,25 @@ def hold_back_late(
     return kept, held
 
 
-def release_late(path: Path, batch: int) -> list[dict]:
-    """Return held events that are due in this batch. The rest stay in the file."""
+def read_late(path: Path) -> list[dict]:
+    """Records waiting for a later batch. Does not change the file."""
     if not path.exists():
         return []
     with path.open() as f:
-        records = [json.loads(line) for line in f if line.strip()]
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def split_late(records: list[dict], batch: int) -> tuple[list[dict], list[dict]]:
+    """Events due in this batch, and the records that keep waiting."""
     due = [r["event"] for r in records if r["release_batch"] <= batch]
     waiting = [r for r in records if r["release_batch"] > batch]
-    if waiting:
-        with path.open("w") as f:
-            for record in waiting:
-                f.write(json.dumps(record) + "\n")
-    else:
-        path.unlink()
-    return due
+    return due, waiting
 
 
-def save_late(path: Path, held: list[dict]) -> None:
-    if not held:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as f:
-        for record in held:
-            f.write(json.dumps(record) + "\n")
+def write_late(path: Path, records: list[dict]) -> None:
+    """Replace the file with the given records. A Unity Catalog volume does not
+    support appending to an existing file, only writing a whole file."""
+    write_lines_or_remove(path, [json.dumps(r) for r in records])
 
 
 def inject_duplicates(
@@ -171,23 +166,29 @@ def inject_duplicates(
     return [event for _, event in keyed], carry_over
 
 
-def load_pending(path: Path) -> list[dict]:
-    """Read carry-over duplicates from an earlier run, then clear the file."""
+def read_pending(path: Path) -> list[dict]:
+    """Carry-over duplicates from an earlier run. Does not change the file."""
     if not path.exists():
         return []
     with path.open() as f:
-        pending = [json.loads(line) for line in f if line.strip()]
-    path.unlink()
-    return pending
+        return [json.loads(line) for line in f if line.strip()]
 
 
-def save_pending(path: Path, events: list[dict]) -> None:
-    if not events:
+def write_pending(path: Path, events: list[dict]) -> None:
+    """Replace the file with the duplicates held for the next batch."""
+    write_lines_or_remove(path, [json.dumps(e) for e in events])
+
+
+def write_lines_or_remove(path: Path, lines: list[str]) -> None:
+    """Write the whole file, or remove it when there is nothing to keep."""
+    if not lines:
+        if path.exists():
+            path.unlink()
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as f:
-        for event in events:
-            f.write(json.dumps(event) + "\n")
+    with path.open("w") as f:
+        for line in lines:
+            f.write(line + "\n")
 
 
 def corrupt_events(
@@ -371,14 +372,17 @@ def main() -> None:
     events, carry_over = inject_duplicates(events, args.duplicate_rate, args.seed)
 
     # Events held back by earlier runs arrive at the start of this file.
-    late_due = release_late(args.late_file, args.batch)
-    pending = load_pending(args.pending_file)
+    late_due, late_waiting = split_late(read_late(args.late_file), args.batch)
+    pending = read_pending(args.pending_file)
     events = late_due + pending + events
-    save_late(args.late_file, late_held)
-    save_pending(args.pending_file, carry_over)
 
     lines, n_malformed = to_lines(events, args.malformed_rate, args.seed)
     path = write_batch(lines, args.out_dir, args.batch)
+
+    # The state is committed only after the batch file exists, so a failed run
+    # leaves it untouched and can simply be run again.
+    write_late(args.late_file, late_waiting + late_held)
+    write_pending(args.pending_file, carry_over)
     print(
         f"Wrote {len(lines)} lines to {path}\n"
         f"  late events arriving now: {len(late_due)}, held back for later: {len(late_held)}\n"
