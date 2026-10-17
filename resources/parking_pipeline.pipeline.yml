@@ -1,0 +1,11 @@
+resources:
+  pipelines:
+    parking_pipeline:
+      name: parking-lakehouse
+      catalog: parking
+      schema: silver
+      serverless: true
+      continuous: false
+      libraries:
+        - notebook:
+            path: ../pipelines/parking_pipeline.py

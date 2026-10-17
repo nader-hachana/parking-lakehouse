@@ -1,0 +1,63 @@
+resources:
+  jobs:
+    parking_daily:
+      name: parking-lakehouse-daily
+      max_concurrent_runs: 1
+      timeout_seconds: 3600
+
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: Europe/Vienna
+        pause_status: ${var.schedule_pause_status}
+
+      # Serverless Python script tasks need an environment.
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+
+      tasks:
+        - task_key: generate_batch
+          environment_key: default
+          max_retries: 1
+          spark_python_task:
+            python_file: ../generator/run_batch.py
+            parameters:
+              - --root
+              - /Volumes/parking/landing/events
+              - --sessions
+              - "100"
+              # The script is run with exec(), so it cannot find its own folder.
+              - --code-dir
+              - ${workspace.file_path}/generator
+
+        - task_key: generate_garages
+          environment_key: default
+          max_retries: 1
+          spark_python_task:
+            python_file: ../generator/run_garages.py
+            parameters:
+              - --root
+              - /Volumes/parking/landing/events
+              - --set-rate-from
+              - 2026-10-05:G01:Z1=2.75
+              - --code-dir
+              - ${workspace.file_path}/generator
+
+        - task_key: run_pipeline
+          depends_on:
+            - task_key: generate_batch
+            - task_key: generate_garages
+          max_retries: 1
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.parking_pipeline.id}
+
+        - task_key: check_results
+          depends_on:
+            - task_key: run_pipeline
+          notebook_task:
+            notebook_path: ../checks/check_results.py

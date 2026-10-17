@@ -1,0 +1,30 @@
+# Declarative Automation Bundle (formerly Databricks Asset Bundles): the pipeline and the job as code.
+#
+# The workspace host is not set here. Locally it comes from the CLI profile
+# (databricks bundle validate --profile parking), in CI from DATABRICKS_HOST.
+
+bundle:
+  name: parking_lakehouse
+
+include:
+  - resources/*.yml
+
+# Only the code the job runs is uploaded to the workspace.
+sync:
+  exclude:
+    - README.md
+    - uv.lock
+    - pyproject.toml
+    - tests/**
+    - .github/**
+
+variables:
+  schedule_pause_status:
+    description: PAUSED or UNPAUSED. The schedule stays paused unless a target says otherwise.
+    default: PAUSED
+
+# Free Edition has a single workspace, so there is one target. With a paid workspace a prod target
+# would be added here, running as a service principal.
+targets:
+  dev:
+    default: true
