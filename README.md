@@ -36,7 +36,7 @@ The generated data is messy on purpose: duplicates, late events, missing fields,
 | 2 | Bronze with Auto Loader | Done |
 | 3 | Silver with Lakeflow Declarative Pipelines | Done |
 | 4 | Gold tables and performance | Done |
-| 5 | Orchestration with Jobs | In progress |
+| 5 | Orchestration with Jobs | Done |
 | 6 | Tests and CI/CD with Asset Bundles | To do |
 | 7 | Observability and dashboard | To do |
 | 8 | Documentation | To do |
@@ -76,7 +76,7 @@ generate_garages ---/
 
 The generators inject problems on purpose (duplicates, late events, missing and invalid values, broken lines, two schema changes), so the pipeline has real work to do.
 
-The job is currently created by hand with the Databricks CLI, has no schedule yet, and is not defined in this repository. Defining it as code (Asset Bundles) is part of Phase 6.
+The job has a daily schedule trigger. It is currently created by hand with the Databricks CLI and is not defined in this repository. Defining it as code (Asset Bundles) is part of Phase 6.
 
 ## Running the generator locally
 
