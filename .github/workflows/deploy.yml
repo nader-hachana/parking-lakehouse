@@ -41,8 +41,8 @@ jobs:
       # takes its tables with it). Stop instead of deploying.
       - name: Plan, and refuse to create, recreate or delete resources
         run: |
-          databricks bundle plan | tee plan.txt
-          if grep -Eq '^(create|recreate|delete) ' plan.txt; then
+          databricks bundle plan | tee "$RUNNER_TEMP/plan.txt"
+          if grep -Eq '^(create|recreate|delete) ' "$RUNNER_TEMP/plan.txt"; then
             echo "::error::The plan would create, recreate or delete resources instead of updating the existing ones."
             exit 1
           fi
