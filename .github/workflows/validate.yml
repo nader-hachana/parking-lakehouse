@@ -1,0 +1,33 @@
+name: validate-bundle
+
+# On every pull request: check that the bundle is valid and show what a merge would change.
+# Both commands only read from the workspace, nothing is deployed.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-bundle:
+    # Secrets are not available to pull requests from forks, so the check is skipped there.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: databricks/setup-cli@main
+
+      - name: Validate the bundle
+        run: databricks bundle validate
+
+      - name: Show what a merge would change
+        run: databricks bundle plan

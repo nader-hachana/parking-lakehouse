@@ -106,18 +106,19 @@ Each call writes the next file into `data/local/landing/`, so running it several
 
 ## Tests
 
-The generator is plain Python, so its tests run without Databricks:
+The generator and the pipeline's design are tested without Databricks:
 
 ```bash
 uv run pytest
 uv run ruff check .
 ```
 
-They cover the data the generator produces (every session has entry, payment and exit in order, unique event ids), each injected problem (rates, no event with two problems, exact duplicates, late events keeping their time, cut-off JSON lines), the two schema changes, the batch and snapshot runners (next batch number, next date, scheduled rate changes) and the state handling (a failed write leaves the state untouched).
+- **Generator (plain Python):** the data it produces (every session has entry, payment and exit in order, unique event ids), each injected problem (rates, no event with two problems, exact duplicates, late events keeping their time, cut-off JSON lines), the two schema changes, the batch and snapshot runners (next batch number, next date, scheduled rate changes) and the state handling (a failed write leaves the state untouched).
+- **Pipeline:** the real pipeline file is imported with a fake `pyspark.pipelines` that records what it declares, so the tests check the design (which tables and views exist, the keys and sequence columns of the two CDC flows, that `snapshot_ts` is not tracked, that the shared rule dictionary is used as drop and warn rules). The SQL quality rules are evaluated on sample rows with a small local Spark session (PySpark 3.5, needs Java 11 to 17). Without Java, those tests are skipped.
 
 ## CI/CD
 
-- **On every pull request** (`.github/workflows/ci.yml`): `ruff` and `pytest`. No credentials are needed.
+- **On every pull request** (`.github/workflows/ci.yml`): `ruff` and `pytest`. No credentials are needed. A second workflow (`validate.yml`) runs `bundle validate` and `bundle plan` for branches of this repository, so a broken bundle is caught before the merge and the pull request shows what a merge would change.
 - **After a merge to `main`** (`.github/workflows/deploy.yml`): the same checks run first, then `bundle validate`, a `bundle plan` that stops if it would create new resources instead of updating the existing ones, and `bundle deploy`. It does not run the job, and the schedule stays paused.
 - **`main` is protected** by a ruleset: changes go through a pull request, the `lint-and-test` check must pass and the branch must be up to date. Direct pushes are rejected, for the owner too. A pull request can still be merged by the owner in an emergency.
 - **Credentials:** `DATABRICKS_HOST` and `DATABRICKS_TOKEN` are GitHub Actions secrets. The token is a personal access token with a 30 day lifetime, so the deploy will fail with an authentication error when it expires: create a new one and run `gh secret set DATABRICKS_TOKEN`.
