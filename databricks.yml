@@ -20,6 +20,7 @@ sync:
     - tests/**
     - .github/**
     - dashboards/**
+    - architecture.*
 
 variables:
   warehouse_id:
