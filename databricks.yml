@@ -9,7 +9,9 @@ bundle:
 include:
   - resources/*.yml
 
-# Only the code the job runs is uploaded to the workspace.
+# Only the code the job runs is uploaded to the workspace. The dashboard definition is not: the
+# dashboard resource reads it locally, and a .lvdash.json file in the workspace would show up
+# there as a second, unmanaged dashboard.
 sync:
   exclude:
     - README.md
@@ -17,6 +19,7 @@ sync:
     - pyproject.toml
     - tests/**
     - .github/**
+    - dashboards/**
 
 variables:
   warehouse_id:
