@@ -297,3 +297,63 @@ def zone_occupancy_hourly():
         F.col("z.capacity"),
         F.round(F.col("o.cars_present") / F.col("z.capacity") * 100, 1).alias("occupancy_pct"),
     )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Gold: data quality per batch
+# MAGIC One row per delivered file: when it was ingested, how many lines it had and how many
+# MAGIC were rejected and why. The numbers come from the tables themselves, so they can be
+# MAGIC queried and charted, and old batches do not disappear like job run outputs do.
+
+# COMMAND ----------
+
+
+def batch_quality(raw, rejected, valid):
+    """One row per source file. `raw` is the bronze table, `rejected` and `valid` the silver ones."""
+    reason_columns = [f"rejected_{reason}" for reason in DROP_RULES]
+
+    lines = raw.groupBy("_source_file").agg(
+        F.min("_ingested_at").alias("ingested_at"),
+        F.count("*").alias("raw_lines"),
+    )
+    rejects = rejected.groupBy("_source_file").agg(
+        F.count("*").alias("rejected_rows"),
+        *[
+            F.sum(F.when(F.col("reject_reason") == reason, 1).otherwise(0)).alias(f"rejected_{reason}")
+            for reason in DROP_RULES
+        ],
+    )
+    warned = valid.groupBy("_source_file").agg(
+        F.sum(F.when(F.col("plate").isNull(), 1).otherwise(0)).alias("missing_plate")
+    )
+
+    return (
+        lines.join(rejects, "_source_file", "left")
+        .join(warned, "_source_file", "left")
+        .na.fill(0, ["rejected_rows", "missing_plate", *reason_columns])
+        .withColumn("reject_share", F.round(F.col("rejected_rows") / F.col("raw_lines"), 4))
+        .withColumn("batch", F.regexp_extract("_source_file", r"batch_(\d+)_", 1).cast("int"))
+        .select(
+            "batch",
+            "ingested_at",
+            "raw_lines",
+            "rejected_rows",
+            "reject_share",
+            *reason_columns,
+            "missing_plate",
+            "_source_file",
+        )
+    )
+
+
+@dp.materialized_view(
+    name=f"{CATALOG}.gold.data_quality_by_batch",
+    comment="Lines, rejected rows (by reason) and missing plates per delivered file.",
+)
+def data_quality_by_batch():
+    return batch_quality(
+        spark.read.table(RAW_EVENTS),
+        spark.read.table(f"{CATALOG}.silver.events_rejected"),
+        spark.read.table(f"{CATALOG}.silver.events_valid"),
+    )
