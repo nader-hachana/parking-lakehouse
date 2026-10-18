@@ -19,6 +19,10 @@ sync:
     - .github/**
 
 variables:
+  warehouse_id:
+    description: SQL warehouse that runs the dashboard queries, found by name.
+    lookup:
+      warehouse: Serverless Starter Warehouse
   schedule_pause_status:
     description: PAUSED or UNPAUSED. The schedule stays paused unless a target says otherwise.
     default: PAUSED

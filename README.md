@@ -57,7 +57,8 @@ parking                catalog
 generator/        simulates the source systems (events and zone snapshots)
 pipelines/        the Lakeflow Declarative Pipeline: bronze, silver and gold
 checks/           data checks run as the last task of the job
-queries/          saved SQL, for example the pipeline health query
+queries/          saved SQL: the pipeline health query and the dashboard datasets
+dashboards/       the dashboard definition (AI/BI dashboard as a .lvdash.json file)
 resources/        the job and the pipeline as bundle resources
 databricks.yml    the bundle: what gets deployed and how
 tests/            unit tests for the generator
@@ -107,7 +108,8 @@ Each call writes the next file into `data/local/landing/`, so running it several
 
 ## Observability
 
-`queries/pipeline_health.sql` answers "how many bad records did we drop yesterday, and is today's data fresh?". Dropped records come from `gold.data_quality_by_batch` (one row per delivered file: lines, rejected rows by reason, rows kept with a missing plate), freshness from the newest `_ingested_at` in bronze (stale after 26 hours, because a daily run is expected). Freshness uses the arrival time: the generated events carry dates that follow the batch number, not the clock.
+- **Pipeline health query** (`queries/pipeline_health.sql`): "how many bad records did we drop yesterday, and is today's data fresh?". Dropped records come from `gold.data_quality_by_batch` (one row per delivered file: lines, rejected rows by reason, rows kept with a missing plate), freshness from the newest `_ingested_at` in bronze (stale after 26 hours, because a daily run is expected). Freshness uses the arrival time: the generated events carry dates that follow the batch number, not the clock.
+- **Dashboard** (`dashboards/parking_dashboard.lvdash.json`, deployed by the bundle): a page for pipeline health (hours since the last ingestion, freshness status, records dropped yesterday, the reject share of the last delivery, rejected rows by reason per batch) and a page for the business (revenue and average parking duration per garage and day, occupancy by hour with garage and zone filters, sessions by status). The datasets are in `queries/dashboard_datasets.sql`. The SQL warehouse is found by name at deploy time, so no id is stored in the repository.
 
 ## Tests
 

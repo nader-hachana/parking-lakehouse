@@ -35,14 +35,15 @@ jobs:
       - name: Validate the bundle
         run: databricks bundle validate
 
-      # A fresh runner has no local state. If the plan wants to create anything, the job and
-      # the pipeline that already exist are not recognised, and a deploy would duplicate them
-      # (Free Edition allows one active pipeline). Stop instead of deploying.
-      - name: Plan, and refuse to create new resources
+      # A fresh runner has no local state. If the plan wants to create something, a resource that
+      # already exists is not recognised, and a deploy would duplicate it (Free Edition allows one
+      # active pipeline). A recreate or a delete would remove a resource that holds data (a pipeline
+      # takes its tables with it). Stop instead of deploying.
+      - name: Plan, and refuse to create, recreate or delete resources
         run: |
           databricks bundle plan | tee plan.txt
-          if grep -Eq '^create ' plan.txt; then
-            echo "::error::The plan would create new resources instead of updating the existing ones."
+          if grep -Eq '^(create|recreate|delete) ' plan.txt; then
+            echo "::error::The plan would create, recreate or delete resources instead of updating the existing ones."
             exit 1
           fi
 
