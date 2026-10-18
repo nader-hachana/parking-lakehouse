@@ -12,7 +12,7 @@ Example:
 
 import argparse
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from generate_events import GARAGES, TS_FORMAT
@@ -26,7 +26,7 @@ def parse_rate_change(value: str) -> tuple[str, str, float]:
 
 
 def build_snapshot(day: date, rate_changes: list[tuple[str, str, float]]) -> list[dict]:
-    snapshot_ts = datetime(day.year, day.month, day.day, tzinfo=timezone.utc).strftime(TS_FORMAT)
+    snapshot_ts = datetime(day.year, day.month, day.day, tzinfo=UTC).strftime(TS_FORMAT)
     changes = {(g, z): r for g, z, r in rate_changes}
     unknown = set(changes) - {(g, z) for g, zones in GARAGES.items() for z in zones}
     if unknown:

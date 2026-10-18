@@ -30,7 +30,7 @@ BATCH_PATTERN = re.compile(r"batch_(\d{4})_")
 
 def code_dir() -> Path:
     """Folder that holds generate_events.py: --code-dir, or this file's folder."""
-    pre = argparse.ArgumentParser(add_help=False)
+    pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre.add_argument("--code-dir", type=Path)
     known, _ = pre.parse_known_args()
     if known.code_dir:
@@ -41,7 +41,7 @@ def code_dir() -> Path:
 
 
 sys.path.insert(0, str(code_dir()))
-import generate_events  # noqa: E402
+import generate_events
 
 
 def next_batch_number(events_dir: Path) -> int:

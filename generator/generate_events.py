@@ -21,7 +21,7 @@ import json
 import math
 import random
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 # garage_id -> {zone_id: hourly rate in EUR}
@@ -89,7 +89,7 @@ def make_session(rng: random.Random, day_start: datetime) -> list[dict]:
 
 def generate(sessions: int, seed: int, day: date) -> list[dict]:
     rng = random.Random(seed)
-    day_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+    day_start = datetime(day.year, day.month, day.day, tzinfo=UTC)
     events = []
     for _ in range(sessions):
         events.extend(make_session(rng, day_start))
@@ -273,7 +273,7 @@ def add_entry_gate(events: list[dict], seed: int) -> list[dict]:
 
 def write_batch(lines: list[str], out_dir: Path, batch: int) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     path = out_dir / f"batch_{batch:04d}_{stamp}.jsonl"
     with path.open("w") as f:
         for line in lines:

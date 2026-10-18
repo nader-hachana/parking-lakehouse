@@ -23,9 +23,9 @@ The generated data is messy on purpose: duplicates, late events, missing fields,
 - Databricks Free Edition (serverless)
 - Unity Catalog and Volumes
 - Auto Loader, Lakeflow Declarative Pipelines, Delta Lake
-- Databricks Jobs
-- Python, SQL, PySpark
-- Asset Bundles and GitHub Actions (planned, Phase 6)
+- Databricks Jobs and Declarative Automation Bundles (formerly Asset Bundles)
+- Python, SQL, PySpark, pytest, ruff
+- GitHub Actions (planned, Phase 6)
 
 ## Project status
 
@@ -37,7 +37,7 @@ The generated data is messy on purpose: duplicates, late events, missing fields,
 | 3 | Silver with Lakeflow Declarative Pipelines | Done |
 | 4 | Gold tables and performance | Done |
 | 5 | Orchestration with Jobs | Done |
-| 6 | Tests and CI/CD with Asset Bundles | To do |
+| 6 | Tests and CI/CD with Asset Bundles | In progress |
 | 7 | Observability and dashboard | To do |
 | 8 | Documentation | To do |
 
@@ -54,9 +54,12 @@ parking                catalog
 ## Repository layout
 
 ```
-generator/    simulates the source systems (events and zone snapshots)
-pipelines/    the Lakeflow Declarative Pipeline: bronze, silver and gold
-checks/       data checks run as the last task of the job
+generator/        simulates the source systems (events and zone snapshots)
+pipelines/        the Lakeflow Declarative Pipeline: bronze, silver and gold
+checks/           data checks run as the last task of the job
+resources/        the job and the pipeline as bundle resources
+databricks.yml    the bundle: what gets deployed and how
+tests/            unit tests for the generator
 ```
 
 ## How it runs
@@ -76,7 +79,19 @@ generate_garages ---/
 
 The generators inject problems on purpose (duplicates, late events, missing and invalid values, broken lines, two schema changes), so the pipeline has real work to do.
 
-The job has a daily schedule trigger. It is currently created by hand with the Databricks CLI and is not defined in this repository. Defining it as code (Asset Bundles) is part of Phase 6.
+The job and the pipeline are defined in this repository as a Declarative Automation Bundle (`databricks.yml` and `resources/`). The job has a daily schedule trigger at 06:00 Vienna time, paused by default.
+
+## Deploying it
+
+With the [Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/) authenticated (`databricks auth login --host <workspace url> --profile parking`):
+
+```bash
+databricks bundle validate --profile parking
+databricks bundle deploy --profile parking
+databricks bundle run parking_daily --profile parking
+```
+
+`deploy` uploads the code and creates or updates the job and the pipeline. Run it once per batch to follow the data through bronze, silver and gold, or switch the schedule on with `--var schedule_pause_status=UNPAUSED`. To start over, empty the landing folders in the volume and deploy a fresh bundle (after `databricks bundle destroy`).
 
 ## Running the generator locally
 
@@ -88,6 +103,17 @@ uv run python generator/run_garages.py --root data/local/landing --set-rate-from
 ```
 
 Each call writes the next file into `data/local/landing/`, so running it several times produces a series of batches.
+
+## Tests
+
+The generator is plain Python, so its tests run without Databricks:
+
+```bash
+uv run pytest
+uv run ruff check .
+```
+
+They cover the data the generator produces (every session has entry, payment and exit in order, unique event ids), each injected problem (rates, no event with two problems, exact duplicates, late events keeping their time, cut-off JSON lines), the two schema changes, the batch and snapshot runners (next batch number, next date, scheduled rate changes) and the state handling (a failed write leaves the state untouched).
 
 ## Limitations
 

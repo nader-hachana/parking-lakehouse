@@ -31,7 +31,7 @@ SNAPSHOT_PATTERN = re.compile(r"garages_(\d{8})\.jsonl$")
 
 def code_dir() -> Path:
     """Folder that holds generate_garages.py: --code-dir, or this file's folder."""
-    pre = argparse.ArgumentParser(add_help=False)
+    pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre.add_argument("--code-dir", type=Path)
     known, _ = pre.parse_known_args()
     if known.code_dir:
@@ -42,7 +42,7 @@ def code_dir() -> Path:
 
 
 sys.path.insert(0, str(code_dir()))
-from generate_garages import build_snapshot  # noqa: E402
+from generate_garages import build_snapshot
 
 
 def latest_snapshot_date(garages_dir: Path) -> date | None:
