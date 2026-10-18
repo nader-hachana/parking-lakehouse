@@ -6,19 +6,26 @@ A data pipeline on Databricks that turns raw, messy parking garage events into c
 
 I built it to learn Databricks hands-on, coming from PostgreSQL, ClickHouse and PySpark. I picked parking because I already know the domain, so I could focus on the platform instead of the business logic.
 
-## Project status
+What this project shows:
 
-| Phase | What | Status |
-|---|---|---|
-| 0 | Setup: workspace, CLI, catalog, schemas, landing volume | Done |
-| 1 | Event generator | Done |
-| 2 | Bronze with Auto Loader | Done |
-| 3 | Silver with Lakeflow Declarative Pipelines | Done |
-| 4 | Gold tables and performance | Done |
-| 5 | Orchestration with Jobs | Done |
-| 6 | Tests and CI/CD with bundles | Done |
-| 7 | Observability and dashboard | Done |
-| 8 | Documentation | In progress |
+- Incremental ingestion with Auto Loader and a bronze, silver, gold design in Unity Catalog
+- Data quality as code: drop and warn rules, a quarantine table, deduplication, SCD Type 2 history
+- A scheduled job with retries and a final data check
+- Tests with a local Spark session, and CI/CD that deploys the job, pipeline and dashboard from this repository
+
+## Quick start
+
+Without a Databricks account you can run the data generators locally. You need [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 for you), and Java 11 to 17 only if you want the Spark tests.
+
+```bash
+git clone https://github.com/nader-hachana/parking-lakehouse.git
+cd parking-lakehouse
+uv sync
+uv run pytest
+uv run python generator/run_batch.py --root data/local/landing --sessions 100
+```
+
+The pipeline, the job and the dashboard need a Databricks workspace (the free edition is enough): see [Setup and deployment](#setup-and-deployment). The bundle looks up a SQL warehouse called "Serverless Starter Warehouse", so change `lookup` in `databricks.yml` if yours is named differently. The deploy workflow needs the `DATABRICKS_HOST` and `DATABRICKS_TOKEN` secrets, so it will not run on a fork.
 
 ## Architecture
 
@@ -32,44 +39,15 @@ I built it to learn Databricks hands-on, coming from PostgreSQL, ClickHouse and 
 
 The generated data is messy on purpose: duplicates (inside a file and across files), late events, missing fields, invalid values, broken lines, and two new fields that appear over time. That is what gives the cleaning steps something to do.
 
-## Result of a full run
+## Verified result
 
-Six runs of the job from an empty workspace, repeated three times (by hand, through the CLI and through the bundle) with identical numbers:
+The data is simulated, with known problems injected on purpose (duplicates, late events, broken lines, invalid amounts, schema changes). Six runs of the job from an empty workspace, repeated three times (by hand, through the CLI and through the bundle), gave the same numbers every time:
 
-| Layer | Result |
-|---|---|
-| Raw lines landed | 1,815 |
-| Rejected (10 broken lines and 3 invalid amounts) | 13, each with its reason |
-| Unique events in silver | 1,770 (duplicates removed) |
-| Sessions | 600 |
-| Zone history | 7 rows (one zone changed its rate on 2026-10-05, so it has two versions) |
-| Gold revenue against silver payments | equal (6,720.1) |
-
-## Key design decisions and trade-offs
-
-| Decision | Why | Trade-off |
-|---|---|---|
-| One pipeline owns bronze, silver and gold | One declared graph, checkpoints and schema handling managed for me, and Free Edition allows one active pipeline anyway | Less control over internal state, a full reset means a full refresh |
-| Bronze keeps raw data, including broken lines (`_corrupt_record`) | Nothing is lost silently, and a row count that matches the file lines would hide lost content (I found that on a real run) | Bronze holds junk, silver has to filter it |
-| Quality rules in one dictionary, used for the expectations and the quarantine table | The rows dropped and the rows quarantined cannot drift apart, and the rules are testable | Only row level rules fit in it |
-| Drop for corrupt JSON, missing id, unknown type, invalid amount. Warn for a missing plate or unknown vehicle type | Occupancy, duration and revenue do not need the plate, so a valid parking event is not thrown away for it | A warning keeps the row, so the warning count has to be watched |
-| Deduplication with `AUTO CDC` (type 1) on `event_id`, latest ingestion wins | Retries and replayed files repeat the same id | Lineage in silver points to the latest delivery. If corrections should be ignored, the rule changes |
-| Zone history with `AUTO CDC` (type 2), the sequence column left out of the tracked columns | A new version only when an attribute changes, and an old snapshot cannot overwrite a newer one | Depends on a reliable snapshot timestamp |
-| Sessions and gold as materialized views | A late exit has to change a session that was already counted | A refresh can cost a full recompute. One view (occupancy) is always recomputed, which the engine's cost model judged cheaper at this size |
-| Schema evolution `addNewColumns` in bronze, explicit column list in silver | A new field lands in bronze without breaking anything, and does not reach silver by accident | One line to add per field silver should use |
-| Generator state lives in the volume and is committed after the output file is written | Job compute is temporary, and a failed or retried run must not damage the series | A crash between the file and the state loses the late events held by that attempt |
-| Liquid clustering on `(garage_id, zone_id)` (measured on a 150,000 event copy) | Files read 10 to 1 and bytes read about 10 times fewer for a one zone query, same answer | At this size it shows the mechanism, not production speed, and the time gain was modest |
-| Python for the pipeline, SQL for analysis | Same engine, so I chose by maintainability: shared rules and testable functions | |
-| A deploy guard that refuses to create, recreate or delete resources | A runner that does not recognise an existing resource would duplicate it, and a recreate of the pipeline deletes its tables | A new resource has to be bound and deployed once by hand |
-| Personal access token for the deploy | Free Edition allows creating one | Tied to a person and expires after 30 days. A service principal with OAuth would be the production choice |
+- 1,815 raw lines in, 13 rejected with their reason (10 broken lines, 3 invalid amounts), 1,770 unique events after deduplication
+- 600 sessions, and 7 zone history rows (one zone changed its rate on 2026-10-05, so it has two versions)
+- Gold revenue equals the silver payments (6,720.1), so nothing was lost or counted twice
 
 ## How it runs
-
-```
-generate_batch  ----\
-                      >----  run_pipeline  ---->  check_results
-generate_garages ---/
-```
 
 - **generate_batch** (`generator/run_batch.py`) writes the next batch of events. It works out the batch number and date itself and keeps its state in the volume.
 - **generate_garages** (`generator/run_garages.py`) writes the next daily snapshot of the zones, including a scheduled rate change.
@@ -120,15 +98,16 @@ uv run pytest
 uv run ruff check .
 ```
 
-- **Generator (plain Python):** the data it produces (every session has entry, payment and exit in order, unique event ids), each injected problem (rates, no event with two problems, exact duplicates, late events keeping their time, cut-off JSON lines), the two schema changes, the batch and snapshot runners, and the state handling (a failed write leaves the state untouched).
-- **Pipeline:** the real pipeline file is imported with a fake `pyspark.pipelines` that records what it declares, so the tests check the design (the tables and views, the keys and sequence columns of both CDC flows, that `snapshot_ts` is not tracked, that the shared rule dictionary is used as drop and warn rules). The SQL rules and the data quality logic are evaluated on sample rows with a small local Spark session (PySpark 3.5, needs Java 11 to 17, skipped without Java).
+- **Generator:** the data it makes (ordered sessions, unique event ids), every injected problem, the schema changes, and the state handling (a failed write leaves the state untouched).
+- **Pipeline design:** the real pipeline file is imported with a fake `pyspark.pipelines`, so the tests check the tables, the CDC keys and the shared rule dictionary.
+- **Rules and data quality logic:** run on sample rows with a small local Spark session (PySpark 3.5, needs Java 11 to 17, skipped without Java).
 
 ## CI/CD
 
-- **On every pull request:** `ruff` and `pytest` (`ci.yml`), and `bundle validate` plus `bundle plan` (`validate.yml`, only for branches of this repository, because forks get no secrets), so a broken bundle is caught before the merge and the pull request shows what a merge would change.
-- **After a merge to `main`** (`deploy.yml`): the same checks run first, then `bundle validate`, a `bundle plan` that stops if it would create, recreate or delete anything instead of updating the existing resources, and `bundle deploy`. It does not run the job, and the schedule stays paused.
-- **`main` is protected** by a ruleset: changes go through a pull request with `lint-and-test` and `validate-bundle` green and the branch up to date. Direct pushes are rejected, for the owner too, and the owner can only bypass through a pull request.
-- **Credentials:** `DATABRICKS_HOST` and `DATABRICKS_TOKEN` are GitHub Actions secrets. The token is a personal access token with a 30 day lifetime, so the deploy will fail with an authentication error when it expires: create a new one and run `gh secret set DATABRICKS_TOKEN`.
+- **Every pull request:** `ruff` and `pytest`, plus `bundle validate` and `bundle plan`, so a broken bundle is caught before the merge.
+- **After a merge to `main`:** the same checks, then a plan that stops if it would create, recreate or delete anything, then `bundle deploy`. The job is not run and the schedule stays paused.
+- **`main` is protected:** pull request only, with `lint-and-test` and `validate-bundle` green. Direct pushes are rejected, for the owner too.
+- **Credentials:** `DATABRICKS_HOST` and `DATABRICKS_TOKEN` are Actions secrets. The token is a personal access token that expires after 30 days: create a new one and run `gh secret set DATABRICKS_TOKEN`.
 
 ## Repository layout
 
