@@ -1,11 +1,11 @@
 name: ci
 
-# Lint and unit tests on every pull request and on every push to main.
-# No Databricks credentials are needed: the tests are plain Python.
+# Lint and unit tests. No Databricks credentials are needed: the tests are plain Python.
+# They run on every pull request, and the deploy workflow calls this workflow
+# (workflow_call) before it deploys anything from main.
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
