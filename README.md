@@ -25,7 +25,7 @@ The generated data is messy on purpose: duplicates, late events, missing fields,
 - Auto Loader, Lakeflow Declarative Pipelines, Delta Lake
 - Databricks Jobs and Declarative Automation Bundles (formerly Asset Bundles)
 - Python, SQL, PySpark, pytest, ruff
-- GitHub Actions (planned, Phase 6)
+- GitHub Actions
 
 ## Project status
 
@@ -37,7 +37,7 @@ The generated data is messy on purpose: duplicates, late events, missing fields,
 | 3 | Silver with Lakeflow Declarative Pipelines | Done |
 | 4 | Gold tables and performance | Done |
 | 5 | Orchestration with Jobs | Done |
-| 6 | Tests and CI/CD with Asset Bundles | In progress |
+| 6 | Tests and CI/CD with Asset Bundles | Done |
 | 7 | Observability and dashboard | To do |
 | 8 | Documentation | To do |
 
@@ -115,8 +115,16 @@ uv run ruff check .
 
 They cover the data the generator produces (every session has entry, payment and exit in order, unique event ids), each injected problem (rates, no event with two problems, exact duplicates, late events keeping their time, cut-off JSON lines), the two schema changes, the batch and snapshot runners (next batch number, next date, scheduled rate changes) and the state handling (a failed write leaves the state untouched).
 
+## CI/CD
+
+- **On every pull request** (`.github/workflows/ci.yml`): `ruff` and `pytest`. No credentials are needed.
+- **After a merge to `main`** (`.github/workflows/deploy.yml`): the same checks run first, then `bundle validate`, a `bundle plan` that stops if it would create new resources instead of updating the existing ones, and `bundle deploy`. It does not run the job, and the schedule stays paused.
+- **`main` is protected** by a ruleset: changes go through a pull request, the `lint-and-test` check must pass and the branch must be up to date. Direct pushes are rejected, for the owner too. A pull request can still be merged by the owner in an emergency.
+- **Credentials:** `DATABRICKS_HOST` and `DATABRICKS_TOKEN` are GitHub Actions secrets. The token is a personal access token with a 30 day lifetime, so the deploy will fail with an authentication error when it expires: create a new one and run `gh secret set DATABRICKS_TOKEN`.
+
 ## Limitations
 
 - Free Edition has usage limits, so the data volumes are small. Serverless compute is capped: running notebooks or queries while the job runs can trigger a "limit for serverless compute" error, which the pipeline retries by itself.
 - Unity Catalog volumes cannot append to an existing file, so the generator rewrites its state files as whole files.
 - Storage is managed by Databricks, since Free Edition does not allow custom storage locations.
+- Free Edition has one workspace, so the bundle has a single `dev` target, and the deploy authenticates with a personal access token instead of a service principal.
