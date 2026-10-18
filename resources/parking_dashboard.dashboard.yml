@@ -1,0 +1,7 @@
+resources:
+  dashboards:
+    parking_dashboard:
+      display_name: "parking-lakehouse"
+      warehouse_id: ${var.warehouse_id}
+      file_path: ../dashboards/parking_dashboard.lvdash.json
+      parent_path: /Workspace/Users/${workspace.current_user.userName}

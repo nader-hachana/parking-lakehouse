@@ -1,0 +1,789 @@
+{
+  "datasets": [
+    {
+      "displayName": "pipeline_health",
+      "name": "63eec133",
+      "queryLines": [
+        "WITH yesterday AS (\n",
+        "  SELECT\n",
+        "    COALESCE(SUM(raw_lines), 0)                  AS lines_ingested,\n",
+        "    COALESCE(SUM(rejected_rows), 0)              AS records_dropped,\n",
+        "    COALESCE(SUM(rejected_valid_json), 0)        AS corrupt_lines,\n",
+        "    COALESCE(SUM(rejected_has_event_id), 0)      AS missing_event_id,\n",
+        "    COALESCE(SUM(rejected_known_event_type), 0)  AS unknown_event_type,\n",
+        "    COALESCE(SUM(rejected_valid_amount), 0)      AS invalid_amount,\n",
+        "    COALESCE(SUM(missing_plate), 0)              AS kept_with_missing_plate\n",
+        "  FROM parking.gold.data_quality_by_batch\n",
+        "  WHERE DATE(ingested_at) = current_date() - INTERVAL 1 DAY\n",
+        "),\n",
+        "freshness AS (\n",
+        "  SELECT\n",
+        "    MAX(_ingested_at) AS last_ingested_at,\n",
+        "    ROUND((unix_timestamp(current_timestamp()) - unix_timestamp(MAX(_ingested_at))) / 3600, 1)\n",
+        "      AS hours_since_last_ingestion\n",
+        "  FROM parking.bronze.raw_events\n",
+        ")\n",
+        "SELECT\n",
+        "  y.*,\n",
+        "  f.last_ingested_at,\n",
+        "  f.hours_since_last_ingestion,\n",
+        "  CASE WHEN f.hours_since_last_ingestion > 26 THEN 'STALE' ELSE 'OK' END AS freshness\n",
+        "FROM yesterday y CROSS JOIN freshness f;"
+      ]
+    },
+    {
+      "displayName": "freshness",
+      "name": "4ee9d7c2",
+      "queryLines": [
+        "SELECT\n",
+        "  MAX(_ingested_at) AS last_ingested_at,\n",
+        "  ROUND((unix_timestamp(current_timestamp()) - unix_timestamp(MAX(_ingested_at))) / 3600, 1) AS hours_since_last_ingestion,\n",
+        "  CASE WHEN (unix_timestamp(current_timestamp()) - unix_timestamp(MAX(_ingested_at))) / 3600 > 26\n",
+        "       THEN 'STALE' ELSE 'OK' END AS freshness\n",
+        "FROM parking.bronze.raw_events"
+      ]
+    },
+    {
+      "displayName": "last_batch",
+      "name": "9702d717",
+      "queryLines": [
+        "SELECT batch, ingested_at, raw_lines, rejected_rows, reject_share, missing_plate\n",
+        "FROM parking.gold.data_quality_by_batch\n",
+        "ORDER BY batch DESC\n",
+        "LIMIT 1"
+      ]
+    },
+    {
+      "displayName": "quality_by_batch",
+      "name": "883f122c",
+      "queryLines": [
+        "SELECT batch, raw_lines, rejected_rows, reject_share,\n",
+        "       rejected_valid_json, rejected_has_event_id, rejected_known_event_type, rejected_valid_amount,\n",
+        "       missing_plate\n",
+        "FROM parking.gold.data_quality_by_batch\n",
+        "ORDER BY batch"
+      ]
+    },
+    {
+      "displayName": "revenue_daily",
+      "name": "eb27b59b",
+      "queryLines": [
+        "SELECT revenue_date, garage_id, revenue_eur, payments\n",
+        "FROM parking.gold.revenue_daily\n",
+        "ORDER BY revenue_date, garage_id"
+      ]
+    },
+    {
+      "displayName": "parking_duration_daily",
+      "name": "2dc785a0",
+      "queryLines": [
+        "SELECT entry_date, garage_id, avg_duration_minutes, complete_sessions, open_sessions, invalid_sessions\n",
+        "FROM parking.gold.parking_duration_daily\n",
+        "ORDER BY entry_date, garage_id"
+      ]
+    },
+    {
+      "displayName": "zone_occupancy_hourly",
+      "name": "cc31cc15",
+      "queryLines": [
+        "SELECT hour_ts, garage_id, zone_id, cars_present, capacity, occupancy_pct\n",
+        "FROM parking.gold.zone_occupancy_hourly\n",
+        "ORDER BY hour_ts"
+      ]
+    },
+    {
+      "displayName": "sessions_by_status",
+      "name": "638d801e",
+      "queryLines": [
+        "SELECT status, COUNT(*) AS sessions\n",
+        "FROM parking.silver.sessions\n",
+        "GROUP BY status\n",
+        "ORDER BY sessions DESC"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "displayName": "Pipeline health",
+      "layout": [
+        {
+          "position": {
+            "height": 4,
+            "width": 3,
+            "x": 9,
+            "y": 0
+          },
+          "widget": {
+            "name": "2df797f0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "4ee9d7c2",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`hours_since_last_ingestion`",
+                      "name": "hours_since_last_ingestion"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "hours_since_last_ingestion"
+                }
+              },
+              "frame": {
+                "showDescription": false,
+                "showTitle": true,
+                "title": "Hours Since Last Ingestion"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 4,
+            "width": 3,
+            "x": 6,
+            "y": 0
+          },
+          "widget": {
+            "name": "ba90e132",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "4ee9d7c2",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`freshness`",
+                      "name": "freshness"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "freshness"
+                }
+              },
+              "frame": {
+                "showDescription": false,
+                "showTitle": true,
+                "title": "Freshness Status"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 4,
+            "width": 3,
+            "x": 3,
+            "y": 0
+          },
+          "widget": {
+            "name": "83850657",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "63eec133",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`records_dropped`",
+                      "name": "records_dropped"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "records_dropped"
+                }
+              },
+              "frame": {
+                "showDescription": false,
+                "showTitle": true,
+                "title": "Records Dropped"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 4,
+            "width": 3,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "c629b212",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "9702d717",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`reject_share`",
+                      "name": "reject_share"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "reject_share"
+                }
+              },
+              "frame": {
+                "showDescription": false,
+                "showTitle": true,
+                "title": "Reject Share"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 12,
+            "width": 6,
+            "x": 6,
+            "y": 4
+          },
+          "widget": {
+            "name": "70de5026",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "883f122c",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`batch`",
+                      "name": "batch"
+                    },
+                    {
+                      "expression": "SUM(`rejected_valid_json`)",
+                      "name": "sum(rejected_valid_json)"
+                    },
+                    {
+                      "expression": "SUM(`rejected_has_event_id`)",
+                      "name": "sum(rejected_has_event_id)"
+                    },
+                    {
+                      "expression": "SUM(`rejected_known_event_type`)",
+                      "name": "sum(rejected_known_event_type)"
+                    },
+                    {
+                      "expression": "SUM(`rejected_valid_amount`)",
+                      "name": "sum(rejected_valid_amount)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "batch",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fields": [
+                    {
+                      "fieldName": "sum(rejected_valid_json)"
+                    },
+                    {
+                      "fieldName": "sum(rejected_has_event_id)"
+                    },
+                    {
+                      "fieldName": "sum(rejected_known_event_type)"
+                    },
+                    {
+                      "fieldName": "sum(rejected_valid_amount)"
+                    }
+                  ],
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showDescription": false,
+                "showTitle": true,
+                "title": "Rejection Reasons by Batch"
+              },
+              "mark": {
+                "layout": "stack"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 12,
+            "width": 6,
+            "x": 0,
+            "y": 4
+          },
+          "widget": {
+            "name": "5b03ed4e",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "883f122c",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`batch`",
+                      "name": "batch"
+                    },
+                    {
+                      "expression": "`reject_share`",
+                      "name": "reject_share"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "batch",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "reject_share",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showDescription": false,
+                "showTitle": true,
+                "title": "Reject Share by Batch"
+              },
+              "version": 3,
+              "widgetType": "line"
+            }
+          }
+        }
+      ],
+      "layoutVersion": "GRID_V1",
+      "name": "1221d0eb",
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "displayName": "Business",
+      "layout": [
+        {
+          "position": {
+            "height": 7,
+            "width": 6,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "69541d16",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "eb27b59b",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`garage_id`",
+                      "name": "garage_id"
+                    },
+                    {
+                      "expression": "`revenue_date`",
+                      "name": "revenue_date"
+                    },
+                    {
+                      "expression": "SUM(`revenue_eur`)",
+                      "name": "sum(revenue_eur)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "color": {
+                  "fieldName": "garage_id",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "x": {
+                  "fieldName": "revenue_date",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(revenue_eur)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showDescription": false,
+                "showTitle": true,
+                "title": {
+                  "fields": [],
+                  "value": "Daily Revenue by Garage"
+                }
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 7,
+            "width": 6,
+            "x": 6,
+            "y": 7
+          },
+          "widget": {
+            "name": "4c776e0f",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "638d801e",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`status`",
+                      "name": "status"
+                    },
+                    {
+                      "expression": "`sessions`",
+                      "name": "sessions"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "status",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sessions",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showDescription": false,
+                "showTitle": true,
+                "title": {
+                  "fields": [],
+                  "value": "Sessions by Status"
+                }
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 7,
+            "width": 6,
+            "x": 0,
+            "y": 7
+          },
+          "widget": {
+            "name": "61b425dc",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "2dc785a0",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`garage_id`",
+                      "name": "garage_id"
+                    },
+                    {
+                      "expression": "`entry_date`",
+                      "name": "entry_date"
+                    },
+                    {
+                      "expression": "`avg_duration_minutes`",
+                      "name": "avg_duration_minutes"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "color": {
+                  "fieldName": "garage_id",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "x": {
+                  "fieldName": "entry_date",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "avg_duration_minutes",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showDescription": false,
+                "showTitle": true,
+                "title": {
+                  "fields": [],
+                  "value": "Avg Parking Duration by Garage"
+                }
+              },
+              "version": 3,
+              "widgetType": "line"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 6,
+            "x": 6,
+            "y": 1
+          },
+          "widget": {
+            "name": "dfeddbb6",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "cc31cc15",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`hour_ts`",
+                      "name": "hour_ts"
+                    },
+                    {
+                      "expression": "`occupancy_pct`",
+                      "name": "occupancy_pct"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "hour_ts",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "occupancy_pct",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showDescription": false,
+                "showTitle": true,
+                "title": "Zone Occupancy Over Time"
+              },
+              "version": 3,
+              "widgetType": "line"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 1,
+            "width": 3,
+            "x": 6,
+            "y": 0
+          },
+          "widget": {
+            "name": "filter_garage",
+            "queries": [
+              {
+                "name": "dashboards/01f1cb0bba391137a305d649e9762c3a/datasets/01f1cb0c500811fb81c9a0adbf751856_garage_id",
+                "query": {
+                  "datasetName": "cc31cc15",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`garage_id`",
+                      "name": "garage_id"
+                    },
+                    {
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)",
+                      "name": "garage_id_associativity"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "garage_id",
+                    "queryName": "dashboards/01f1cb0bba391137a305d649e9762c3a/datasets/01f1cb0c500811fb81c9a0adbf751856_garage_id"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "fields": [],
+                  "value": "Garage Filter"
+                }
+              },
+              "version": 2,
+              "widgetType": "filter-multi-select"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 1,
+            "width": 3,
+            "x": 9,
+            "y": 0
+          },
+          "widget": {
+            "name": "filter_zone_2",
+            "queries": [
+              {
+                "name": "dashboards/01f1cb0bba391137a305d649e9762c3a/datasets/01f1cb0c500811fb81c9a0adbf751856_zone_id",
+                "query": {
+                  "datasetName": "cc31cc15",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`zone_id`",
+                      "name": "zone_id"
+                    },
+                    {
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)",
+                      "name": "zone_id_associativity"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "zone_id",
+                    "queryName": "dashboards/01f1cb0bba391137a305d649e9762c3a/datasets/01f1cb0c500811fb81c9a0adbf751856_zone_id"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Zone Filter"
+              },
+              "version": 2,
+              "widgetType": "filter-multi-select"
+            }
+          }
+        }
+      ],
+      "layoutVersion": "GRID_V1",
+      "name": "80343577",
+      "pageType": "PAGE_TYPE_CANVAS"
+    }
+  ],
+  "uiSettings": {
+    "applyModeEnabled": false,
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    }
+  }
+}
