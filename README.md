@@ -38,7 +38,7 @@ The generated data is messy on purpose: duplicates, late events, missing fields,
 | 4 | Gold tables and performance | Done |
 | 5 | Orchestration with Jobs | Done |
 | 6 | Tests and CI/CD with Asset Bundles | Done |
-| 7 | Observability and dashboard | To do |
+| 7 | Observability and dashboard | In progress |
 | 8 | Documentation | To do |
 
 ## Layout in Unity Catalog
@@ -57,6 +57,7 @@ parking                catalog
 generator/        simulates the source systems (events and zone snapshots)
 pipelines/        the Lakeflow Declarative Pipeline: bronze, silver and gold
 checks/           data checks run as the last task of the job
+queries/          saved SQL, for example the pipeline health query
 resources/        the job and the pipeline as bundle resources
 databricks.yml    the bundle: what gets deployed and how
 tests/            unit tests for the generator
@@ -74,7 +75,7 @@ generate_garages ---/
 
 - **generate_batch** (`generator/run_batch.py`) writes the next batch of parking events to the landing volume. It works out the batch number and date itself and keeps its state in the volume.
 - **generate_garages** (`generator/run_garages.py`) writes the next daily snapshot of the garage zones, including a scheduled rate change.
-- **run_pipeline** ingests the new files and refreshes bronze, silver (events, rejected events, sessions, zone history) and the gold tables (revenue, parking duration, zone occupancy).
+- **run_pipeline** ingests the new files and refreshes bronze, silver (events, rejected events, sessions, zone history) and the gold tables (revenue, parking duration, zone occupancy, and data quality per delivered file).
 - **check_results** (`checks/check_results.py`) fails the run when the numbers are clearly wrong, for example an empty table or more than 5 % of raw lines rejected.
 
 The generators inject problems on purpose (duplicates, late events, missing and invalid values, broken lines, two schema changes), so the pipeline has real work to do.
@@ -103,6 +104,10 @@ uv run python generator/run_garages.py --root data/local/landing --set-rate-from
 ```
 
 Each call writes the next file into `data/local/landing/`, so running it several times produces a series of batches.
+
+## Observability
+
+`queries/pipeline_health.sql` answers "how many bad records did we drop yesterday, and is today's data fresh?". Dropped records come from `gold.data_quality_by_batch` (one row per delivered file: lines, rejected rows by reason, rows kept with a missing plate), freshness from the newest `_ingested_at` in bronze (stale after 26 hours, because a daily run is expected). Freshness uses the arrival time: the generated events carry dates that follow the batch number, not the clock.
 
 ## Tests
 

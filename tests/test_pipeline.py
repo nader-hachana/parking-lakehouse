@@ -85,6 +85,7 @@ def test_the_pipeline_declares_every_layer(pipeline):
         "parking.gold.revenue_daily": "materialized_view",
         "parking.gold.parking_duration_daily": "materialized_view",
         "parking.gold.zone_occupancy_hourly": "materialized_view",
+        "parking.gold.data_quality_by_batch": "materialized_view",
     }
     assert fake.streaming_tables == ["parking.silver.events", "parking.silver.dim_zone"]
 
@@ -190,3 +191,50 @@ def test_the_quarantine_table_holds_exactly_the_rows_the_drop_rules_remove(pipel
     rejected = {r["name"] for r in sample.where(module.first_failed_rule(module.DROP_RULES).isNotNull()).collect()}
     assert kept.isdisjoint(rejected)
     assert kept | rejected == set(ROWS)
+
+
+# --- data quality per batch -------------------------------------------------
+
+
+def test_batch_quality_counts_lines_rejects_and_warnings_per_file(pipeline, spark):
+    from datetime import datetime
+
+    first, second = "/Volumes/x/parking_events/batch_0001_a.jsonl", "/Volumes/x/parking_events/batch_0002_b.jsonl"
+    raw = spark.createDataFrame(
+        [(first, datetime(2026, 10, 1, 6, 0))] * 9
+        + [(first, datetime(2026, 10, 1, 6, 1))]
+        + [(second, datetime(2026, 10, 2, 6, 0))] * 5,
+        "_source_file string, _ingested_at timestamp",
+    )
+    rejected = spark.createDataFrame(
+        [(first, "valid_json"), (first, "valid_amount")], "_source_file string, reject_reason string"
+    )
+    valid = spark.createDataFrame(
+        [(first, "W-1"), (first, None), (first, None), (second, None), (second, "W-2")],
+        "_source_file string, plate string",
+    )
+
+    rows = {r["batch"]: r.asDict() for r in pipeline[0].batch_quality(raw, rejected, valid).collect()}
+
+    assert set(rows) == {1, 2}
+    assert rows[1]["raw_lines"] == 10
+    assert rows[1]["rejected_rows"] == 2
+    assert rows[1]["reject_share"] == 0.2
+    assert (rows[1]["rejected_valid_json"], rows[1]["rejected_valid_amount"]) == (1, 1)
+    assert rows[1]["missing_plate"] == 2
+    assert rows[1]["ingested_at"] == datetime(2026, 10, 1, 6, 0)
+    # A file without any rejection gets zeros, not nulls, and its own warning count.
+    assert rows[2]["raw_lines"] == 5
+    assert (rows[2]["rejected_rows"], rows[2]["reject_share"], rows[2]["rejected_valid_json"]) == (0, 0.0, 0)
+    assert rows[2]["missing_plate"] == 1
+
+
+def test_batch_quality_has_one_column_per_drop_rule(pipeline, spark):
+    module = pipeline[0]
+    raw = spark.createDataFrame([("batch_0001_x", None)], "_source_file string, _ingested_at timestamp")
+    rejected = spark.createDataFrame([], "_source_file string, reject_reason string")
+    valid = spark.createDataFrame([], "_source_file string, plate string")
+    columns = module.batch_quality(raw, rejected, valid).columns
+    for rule in module.DROP_RULES:
+        assert f"rejected_{rule}" in columns
+
