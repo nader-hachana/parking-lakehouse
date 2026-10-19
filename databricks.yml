@@ -21,6 +21,7 @@ sync:
     - .github/**
     - dashboards/**
     - architecture.*
+    - dashboard.png
 
 variables:
   warehouse_id:

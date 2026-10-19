@@ -1,6 +1,7 @@
 # Databricks notebook source
 # Parking lakehouse pipeline: bronze (raw files), silver (validated, deduplicated events,
-# quarantine table, zone history). Gold is added in Phase 4.
+# quarantine table, zone history, sessions) and gold (daily revenue, duration, hourly
+# occupancy, data quality per batch).
 
 from pyspark import pipelines as dp
 from pyspark.sql import functions as F
@@ -127,8 +128,9 @@ def events_rejected():
     )
 
 
-# One row per event_id. A retry or a replayed file repeats the same event_id,
-# so keeping the latest version by ingestion time removes the duplicates.
+# One row per event_id. A retry or a replayed file repeats the same event_id, so the latest
+# ingestion wins. Copies that arrive in the same file share one ingestion time and tie, which
+# is harmless because they are exact copies.
 dp.create_streaming_table(
     name=f"{CATALOG}.silver.events",
     comment="Deduplicated events, one row per event_id.",
@@ -182,15 +184,10 @@ SESSIONS = f"{CATALOG}.silver.sessions"
 DIM_ZONE = f"{CATALOG}.silver.dim_zone"
 
 
-@dp.materialized_view(
-    name=SESSIONS,
-    comment="One row per parking session with status and duration. Duration only for complete sessions.",
-)
-def sessions():
+def build_sessions(events):
     e = F.col("event_type")
     s = (
-        spark.read.table(EVENTS)
-        .groupBy("session_id")
+        events.groupBy("session_id")
         .agg(
             F.min(F.when(e == "entry", F.col("event_ts"))).alias("entry_ts"),
             F.max(F.when(e == "exit", F.col("event_ts"))).alias("exit_ts"),
@@ -215,6 +212,14 @@ def sessions():
         ),
     )
 
+
+@dp.materialized_view(
+    name=SESSIONS,
+    comment="One row per parking session with status and duration. Duration only for complete sessions.",
+)
+def sessions():
+    return build_sessions(spark.read.table(EVENTS))
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -225,14 +230,9 @@ def sessions():
 # COMMAND ----------
 
 
-@dp.materialized_view(
-    name=f"{CATALOG}.gold.revenue_daily",
-    comment="Revenue and number of payments per garage and payment date.",
-)
-def revenue_daily():
+def build_revenue_daily(events):
     return (
-        spark.read.table(EVENTS)
-        .where(F.col("event_type") == "payment")
+        events.where(F.col("event_type") == "payment")
         .groupBy("garage_id", F.to_date("event_ts").alias("revenue_date"))
         .agg(
             F.round(F.sum("amount_eur"), 2).alias("revenue_eur"),
@@ -241,15 +241,10 @@ def revenue_daily():
     )
 
 
-@dp.materialized_view(
-    name=f"{CATALOG}.gold.parking_duration_daily",
-    comment="Average parking duration per garage and entry date, with session status counts.",
-)
-def parking_duration_daily():
+def build_parking_duration_daily(sessions):
     status = F.col("status")
     return (
-        spark.read.table(SESSIONS)
-        .where(F.col("entry_ts").isNotNull())
+        sessions.where(F.col("entry_ts").isNotNull())
         .groupBy("garage_id", F.to_date("entry_ts").alias("entry_date"))
         .agg(
             F.round(F.avg("duration_minutes"), 1).alias("avg_duration_minutes"),
@@ -260,12 +255,8 @@ def parking_duration_daily():
     )
 
 
-@dp.materialized_view(
-    name=f"{CATALOG}.gold.zone_occupancy_hourly",
-    comment="Cars present per zone and hour (complete sessions), with capacity valid at that hour.",
-)
-def zone_occupancy_hourly():
-    complete = spark.read.table(SESSIONS).where(F.col("status") == "complete")
+def build_zone_occupancy(sessions, zones):
+    complete = sessions.where(F.col("status") == "complete")
     present = (
         complete.withColumn(
             "hour_ts",
@@ -281,7 +272,7 @@ def zone_occupancy_hourly():
         .agg(F.countDistinct("session_id").alias("cars_present"))
         .alias("o")
     )
-    zones = spark.read.table(DIM_ZONE).alias("z")
+    zones = zones.alias("z")
     # Point-in-time join: the zone version that was valid at that hour.
     valid_at_hour = (
         (F.col("o.garage_id") == F.col("z.garage_id"))
@@ -297,6 +288,30 @@ def zone_occupancy_hourly():
         F.col("z.capacity"),
         F.round(F.col("o.cars_present") / F.col("z.capacity") * 100, 1).alias("occupancy_pct"),
     )
+
+
+@dp.materialized_view(
+    name=f"{CATALOG}.gold.revenue_daily",
+    comment="Revenue and number of payments per garage and payment date.",
+)
+def revenue_daily():
+    return build_revenue_daily(spark.read.table(EVENTS))
+
+
+@dp.materialized_view(
+    name=f"{CATALOG}.gold.parking_duration_daily",
+    comment="Average parking duration per garage and entry date, with session status counts.",
+)
+def parking_duration_daily():
+    return build_parking_duration_daily(spark.read.table(SESSIONS))
+
+
+@dp.materialized_view(
+    name=f"{CATALOG}.gold.zone_occupancy_hourly",
+    comment="Cars present per zone and hour (complete sessions), with capacity valid at that hour.",
+)
+def zone_occupancy_hourly():
+    return build_zone_occupancy(spark.read.table(SESSIONS), spark.read.table(DIM_ZONE))
 
 # COMMAND ----------
 

@@ -17,7 +17,7 @@ def java_works() -> bool:
 
 @pytest.fixture(scope="session")
 def spark():
-    """A small local Spark session, only for the tests that evaluate the SQL rules."""
+    """A small local Spark session, for the tests that run the pipeline's SQL and DataFrame logic."""
     if not java_works():
         pytest.skip("Java is not available, so the Spark tests are skipped")
     from pyspark.sql import SparkSession

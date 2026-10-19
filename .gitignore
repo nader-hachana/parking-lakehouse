@@ -1,6 +1,4 @@
 CLAUDE.md
-PROJECT_LOG.md
-LEARNING_LOG.md
 .venv/
 __pycache__/
 .env
@@ -12,9 +10,9 @@ __pycache__/
 .DS_Store
 
 data/
-INTERVIEW_QA.md
-PROJECT_STORY.md
+
+# private notes
+notes/
 
 # draw.io backup files
 .$*.bkp
-DESIGN_DECISIONS.md
