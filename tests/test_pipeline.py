@@ -2,7 +2,7 @@
 
 The real file is imported with a fake `pyspark.pipelines` that records what the file declares
 (tables, expectations, CDC flows). That tests the design of the pipeline, and the SQL quality
-rules are evaluated with a small local Spark session.
+rules and the transformations are run on sample rows with a small local Spark session.
 """
 
 import importlib.util
@@ -238,3 +238,148 @@ def test_batch_quality_has_one_column_per_drop_rule(pipeline, spark):
     for rule in module.DROP_RULES:
         assert f"rejected_{rule}" in columns
 
+
+
+# --- sessions and gold ------------------------------------------------------
+
+
+def ts(day, hour, minute=0):
+    from datetime import datetime
+
+    return datetime(2026, 10, day, hour, minute)
+
+
+EVENT_SCHEMA = (
+    "event_id string, event_type string, event_ts timestamp, session_id string, "
+    "garage_id string, zone_id string, plate string, amount_eur double"
+)
+
+
+@pytest.fixture
+def events(spark):
+    rows = [
+        # s1: complete, 90 minutes, paid 4.5
+        ("a1", "entry", ts(1, 8, 0), "s1", "G01", "Z1", "W-1", None),
+        ("a2", "payment", ts(1, 9, 25), "s1", "G01", "Z1", "W-1", 4.5),
+        ("a3", "exit", ts(1, 9, 30), "s1", "G01", "Z1", "W-1", None),
+        # s2: still open (no exit yet)
+        ("b1", "entry", ts(1, 10, 0), "s2", "G01", "Z1", "W-2", None),
+        # s3: exit without entry
+        ("c1", "exit", ts(1, 11, 0), "s3", "G02", "Z1", "W-3", None),
+        # s4: exit before entry
+        ("d1", "entry", ts(1, 12, 0), "s4", "G02", "Z1", "W-4", None),
+        ("d2", "exit", ts(1, 11, 0), "s4", "G02", "Z1", "W-4", None),
+        # s5: complete, 60 minutes, paid 3.0 the next day
+        ("e1", "entry", ts(1, 22, 30), "s5", "G02", "Z1", "W-5", None),
+        ("e2", "payment", ts(2, 0, 10), "s5", "G02", "Z1", "W-5", 3.0),
+        ("e3", "exit", ts(2, 0, 30), "s5", "G02", "Z1", "W-5", None),
+    ]
+    return spark.createDataFrame(rows, EVENT_SCHEMA)
+
+
+def by_key(df, *keys):
+    return {tuple(r[k] for k in keys) if len(keys) > 1 else r[keys[0]]: r.asDict() for r in df.collect()}
+
+
+def test_a_session_gets_its_status_from_its_entry_and_exit(pipeline, events):
+    sessions = by_key(pipeline[0].build_sessions(events), "session_id")
+    assert {sid: s["status"] for sid, s in sessions.items()} == {
+        "s1": "complete",
+        "s2": "open",
+        "s3": "no_entry",
+        "s4": "invalid_order",
+        "s5": "complete",
+    }
+
+
+def test_duration_and_amount_are_only_set_where_they_make_sense(pipeline, events):
+    sessions = by_key(pipeline[0].build_sessions(events), "session_id")
+    assert sessions["s1"]["duration_minutes"] == 90
+    assert sessions["s1"]["amount_eur"] == 4.5
+    assert sessions["s5"]["duration_minutes"] == 120
+    for incomplete in ("s2", "s3", "s4"):
+        assert sessions[incomplete]["duration_minutes"] is None
+    assert sessions["s2"]["amount_eur"] is None
+
+
+def test_revenue_is_summed_per_garage_and_payment_date(pipeline, events):
+    revenue = by_key(pipeline[0].build_revenue_daily(events), "garage_id", "revenue_date")
+    from datetime import date
+
+    assert revenue[("G01", date(2026, 10, 1))]["revenue_eur"] == 4.5
+    assert revenue[("G02", date(2026, 10, 2))]["revenue_eur"] == 3.0
+    assert revenue[("G02", date(2026, 10, 2))]["payments"] == 1
+    assert len(revenue) == 2
+
+
+def test_gold_revenue_equals_the_payments_in_silver(pipeline, events):
+    from pyspark.sql import functions as F
+
+    paid = events.where(F.col("event_type") == "payment").agg(F.sum("amount_eur")).first()[0]
+    gold = pipeline[0].build_revenue_daily(events).agg(F.sum("revenue_eur")).first()[0]
+    assert gold == paid
+
+
+def test_parking_duration_counts_sessions_by_status_per_entry_date(pipeline, spark, events):
+    module = pipeline[0]
+    sessions = module.build_sessions(events)
+    daily = by_key(module.build_parking_duration_daily(sessions), "garage_id", "entry_date")
+    from datetime import date
+
+    g01 = daily[("G01", date(2026, 10, 1))]
+    assert (g01["complete_sessions"], g01["open_sessions"], g01["invalid_sessions"]) == (1, 1, 0)
+    assert g01["avg_duration_minutes"] == 90.0
+    g02 = daily[("G02", date(2026, 10, 1))]
+    # s3 has no entry and is left out, s4 is invalid, s5 is complete.
+    assert (g02["complete_sessions"], g02["open_sessions"], g02["invalid_sessions"]) == (1, 0, 1)
+    assert g02["avg_duration_minutes"] == 120.0
+
+
+ZONE_SCHEMA = "garage_id string, zone_id string, capacity int, __START_AT timestamp, __END_AT timestamp"
+
+
+def occupancy(module, spark, events, zones):
+    sessions = module.build_sessions(events)
+    return by_key(
+        module.build_zone_occupancy(sessions, spark.createDataFrame(zones, ZONE_SCHEMA)),
+        "garage_id",
+        "zone_id",
+        "hour_ts",
+    )
+
+
+def test_a_complete_session_counts_in_every_hour_it_touches(pipeline, spark, events):
+    zones = [("G01", "Z1", 40, ts(1, 0), None), ("G02", "Z1", 50, ts(1, 0), None)]
+    rows = occupancy(pipeline[0], spark, events, zones)
+    # s1 is parked 08:00 to 09:30, so it is present in the 08:00 and 09:00 hours.
+    assert sorted(h for (g, z, h) in rows if g == "G01") == [ts(1, 8), ts(1, 9)]
+    assert rows[("G01", "Z1", ts(1, 8))]["cars_present"] == 1
+    assert rows[("G01", "Z1", ts(1, 8))]["occupancy_pct"] == 2.5
+    # s5 crosses midnight: 22:30 to 00:30 covers three hours.
+    assert sorted(h for (g, z, h) in rows if g == "G02") == [ts(1, 22), ts(1, 23), ts(2, 0)]
+
+
+def test_open_and_invalid_sessions_are_not_counted_as_present(pipeline, spark, events):
+    zones = [("G01", "Z1", 40, ts(1, 0), None), ("G02", "Z1", 50, ts(1, 0), None)]
+    rows = occupancy(pipeline[0], spark, events, zones)
+    assert ("G01", "Z1", ts(1, 10)) not in rows
+    assert ("G02", "Z1", ts(1, 11)) not in rows
+    assert ("G02", "Z1", ts(1, 12)) not in rows
+
+
+def test_capacity_comes_from_the_zone_version_valid_at_that_hour(pipeline, spark, events):
+    zones = [
+        ("G01", "Z1", 40, ts(1, 0), ts(1, 9)),
+        ("G01", "Z1", 80, ts(1, 9), None),
+        ("G02", "Z1", 50, ts(1, 0), None),
+    ]
+    rows = occupancy(pipeline[0], spark, events, zones)
+    assert rows[("G01", "Z1", ts(1, 8))]["capacity"] == 40
+    assert rows[("G01", "Z1", ts(1, 9))]["capacity"] == 80
+
+
+def test_hours_before_the_first_zone_snapshot_have_no_capacity(pipeline, spark, events):
+    zones = [("G01", "Z1", 40, ts(1, 9), None), ("G02", "Z1", 50, ts(1, 0), None)]
+    row = occupancy(pipeline[0], spark, events, zones)[("G01", "Z1", ts(1, 8))]
+    assert row["capacity"] is None
+    assert row["occupancy_pct"] is None

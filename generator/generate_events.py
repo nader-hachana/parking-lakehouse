@@ -93,7 +93,6 @@ def generate(sessions: int, seed: int, day: date) -> list[dict]:
     events = []
     for _ in range(sessions):
         events.extend(make_session(rng, day_start))
-    # Files arrive roughly in time order.
     events.sort(key=lambda e: e["event_ts"])
     return events
 

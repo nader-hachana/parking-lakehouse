@@ -10,7 +10,6 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch cancels the run that is still going.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -22,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The tests start a small local Spark session to evaluate the SQL quality rules.
+      # The tests start a small local Spark session for the SQL rules and the session and gold logic.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
